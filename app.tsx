@@ -9,7 +9,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
-import type { Config, Item } from "./core";
+import { actionable, isBot, type Config, type Item } from "./core";
 import { useRoutes, RepositorySection } from "./repository-sections";
 import { mountChromeLocalization, detectLocale } from "./i18n";
 import { useStrings, strings, errorText, type en } from "./i18n";
@@ -18,14 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import {
-  Table,
-  TableHeader,
-  TableHead,
-  TableBody,
-  TableRow,
-  TableCell,
-} from "@/components/ui/table";
+import { Table, TableBody, TableRow, TableCell } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import "./app.css";
 type Snapshot = {
@@ -93,6 +86,9 @@ function Settings({
     JSON.stringify(initial.checkouts, null, 2),
   );
   const [repos, setRepos] = useState(initial.repositories.join("\n"));
+  const [excluded, setExcluded] = useState(
+    initial.excludedRepositories.join("\n"),
+  );
   const [busy, setBusy] = useState(false);
   const rpc = useRpc<typeof rpcContract>();
   const context = useBbContext();
@@ -109,6 +105,7 @@ function Settings({
         bindings: latest.bindings,
         projectId: config.projectId || context.projectId || "",
         repositories: repos.split(/\s+/).filter(Boolean),
+        excludedRepositories: excluded.split(/\s+/).filter(Boolean),
         checkouts: JSON.parse(mapping),
       });
       if (scan) {
@@ -167,6 +164,14 @@ function Settings({
             id="rp-repos"
             value={repos}
             onChange={(e) => setRepos(e.target.value)}
+          />
+        </div>
+        <div>
+          <Label htmlFor="rp-excluded">{t.excludedRepositories}</Label>
+          <Textarea
+            id="rp-excluded"
+            value={excluded}
+            onChange={(e) => setExcluded(e.target.value)}
           />
         </div>
         <div>
@@ -232,7 +237,7 @@ function Page() {
   const [busy, setBusy] = useState(false),
     [settings, setSettings] = useState(false),
     [config, setConfig] = useState<Config | null>(null),
-    [all, setAll] = useState(false),
+    [filter, setFilter] = useState<"active" | "all" | "bots">("active"),
     [dry, setDry] = useState(false),
     [preview, setPreview] = useState("");
   const t = useStrings();
@@ -256,10 +261,10 @@ function Page() {
   }
   const visible = (data?.items ?? []).filter(
     (i) =>
-      all ||
-      i.status === "new" ||
-      i.status === "waiting" ||
-      i.status === "running",
+      filter === "all" ||
+      (filter === "bots"
+        ? i.kind !== "ci" && (i.bot || isBot(i.author))
+        : actionable(i)),
   );
   const repos = [...new Set(visible.map((i) => i.repo))];
   return (
@@ -341,18 +346,26 @@ function Page() {
             <Button
               variant="ghost"
               className="rp-seg-item"
-              aria-pressed={!all}
-              onClick={() => setAll(false)}
+              aria-pressed={filter === "active"}
+              onClick={() => setFilter("active")}
             >
               {t.active}
             </Button>
             <Button
               variant="ghost"
               className="rp-seg-item"
-              aria-pressed={all}
-              onClick={() => setAll(true)}
+              aria-pressed={filter === "all"}
+              onClick={() => setFilter("all")}
             >
               {t.all}
+            </Button>
+            <Button
+              variant="ghost"
+              className="rp-seg-item"
+              aria-pressed={filter === "bots"}
+              onClick={() => setFilter("bots")}
+            >
+              {t.bots}
             </Button>
           </div>
           <Switch id="rp-dry" checked={dry} onCheckedChange={setDry} />
@@ -380,14 +393,8 @@ function Page() {
                 sections={routeData.sections}
                 reload={routeData.reload}
               />
-              <div className="rp-panel-body overflow-x-auto">
+              <div className="rp-panel-body overflow-x-auto rp-items">
                 <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>{t.title}</TableHead>
-                      <TableHead>{t.attention}</TableHead>
-                    </TableRow>
-                  </TableHeader>
                   <TableBody>
                     {visible
                       .filter((i) => i.repo === repo)
@@ -399,9 +406,14 @@ function Page() {
                                 {t[kindKeys[item.kind]]}
                               </span>
                               <span
-                                className={`rp-pill ${item.status === "done" ? "rp-pill-success" : item.status === "running" ? "rp-pill-info" : "rp-pill-warning"}`}
+                                className={`rp-pill ${item.status === "marketplace_waiting" || item.ignored ? "rp-pill-neutral" : item.status === "done" ? "rp-pill-success" : item.status === "running" ? "rp-pill-info" : "rp-pill-warning"}`}
                               >
-                                {statusLabel(item, t)}
+                                {item.ignored
+                                  ? t.notWatching
+                                  : item.reason &&
+                                      ["new", "waiting"].includes(item.status)
+                                    ? t[item.reason]
+                                    : statusLabel(item, t)}
                               </span>
                             </div>
                             <p className="rp-title font-medium">{item.title}</p>
@@ -425,6 +437,7 @@ function Page() {
                                 variant="outline"
                                 disabled={
                                   busy ||
+                                  item.ignored ||
                                   routeData.routes.find((r) => r.repo === repo)
                                     ?.status !== "ready" ||
                                   ["running", "done", "muted"].includes(

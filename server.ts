@@ -1,8 +1,13 @@
+import { DEFAULT_CONTRACT, LEGACY_CONTRACT } from "./agent-contract";
 import { en } from "./messages";
 import { createHash } from "node:crypto";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
+  actionable,
+  isBot,
+  installedRepo,
+  marketplaceRepo,
   configSchema,
   itemSchema,
   mergeItem,
@@ -92,10 +97,27 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
   let config = configSchema.parse((await bb.storage.kv.get("config")) ?? {});
+  if (config.prompt === LEGACY_CONTRACT) {
+    config = { ...config, prompt: DEFAULT_CONTRACT };
+    await bb.storage.kv.set("config", config);
+  }
   const items = new Map<string, Item>();
   for (const key of await bb.storage.kv.list("item:")) {
     const value = itemSchema.safeParse(await bb.storage.kv.get(key));
-    if (value.success) items.set(value.data.id, value.data);
+    if (value.success) {
+      const item = { ...value.data };
+      if (item.repo === "VKirill/bb-plugin-agency" && !item.closed)
+        item.status = "muted";
+      if (
+        item.kind === "marketplace" &&
+        !item.sourceRepo &&
+        ["new", "waiting"].includes(item.status)
+      )
+        item.status = "marketplace_waiting";
+      items.set(item.id, item);
+      if (JSON.stringify(item) !== JSON.stringify(value.data))
+        await bb.storage.kv.set(key, item);
+    }
   }
   let meta = (await bb.storage.kv.get<{
     lastCheck: string | null;
@@ -120,13 +142,67 @@ export default async function plugin(bb: BbPluginApi) {
     queue = next.catch(() => {});
     return next;
   }
+  let inactive = new Set<string>();
+  let activePlugins = new Set<string>();
+  let aliases: { repo: string; names: string[] }[] = [];
+  let archivedRepos = new Set(
+    (await bb.storage.kv.get<string[]>("archived-repos")) ?? [],
+  );
+  async function loadInstalled(
+    repos = [
+      ...new Set([...Object.keys(config.checkouts), ...config.repositories]),
+    ],
+  ) {
+    const { plugins } = await bb.sdk.plugins.list();
+    aliases = plugins.flatMap((p) => {
+      const repo = installedRepo(p, config.owner, repos);
+      return repo
+        ? [
+            {
+              repo,
+              names: [
+                p.id,
+                p.name ?? "",
+                repo.split("/")[1].replace(/^bb-plugin-/, ""),
+              ],
+            },
+          ]
+        : [];
+    });
+    activePlugins = new Set(
+      plugins
+        .filter((p) => p.enabled)
+        .map((p) => installedRepo(p, config.owner, repos))
+        .filter((r): r is string => !!r)
+        .map((r) => r.toLowerCase()),
+    );
+    inactive = new Set(
+      plugins
+        .filter((p) => !p.enabled)
+        .map((p) => installedRepo(p, config.owner, repos))
+        .filter((r): r is string => !!r)
+        .map((r) => r.toLowerCase()),
+    );
+  }
+  await loadInstalled();
+  const watching = (repo: string) =>
+    !inactive.has(repo.toLowerCase()) &&
+    !archivedRepos.has(repo.toLowerCase()) &&
+    !config.excludedRepositories.some(
+      (r) => r.toLowerCase() === repo.toLowerCase(),
+    );
+  const displayItem = (item: Item): Item => ({
+    ...item,
+    ignored:
+      !watching(item.repo) ||
+      (item.kind === "ci" && !activePlugins.has(item.repo.toLowerCase())),
+  });
   const attention = () =>
-    [...items.values()].filter(
-      (i) => i.status === "new" || i.status === "waiting",
-    ).length;
+    [...items.values()].filter((i) => actionable(displayItem(i))).length;
   const snapshot = () => ({
     ...meta,
     items: [...items.values()]
+      .map(displayItem)
       .sort((a, b) => b.updated.localeCompare(a.updated))
       .slice(0, 2000),
     count: attention(),
@@ -289,6 +365,9 @@ export default async function plugin(bb: BbPluginApi) {
   ) {
     const item = items.get(id);
     if (!item) throw Error("itemMissing");
+    await loadInstalled();
+    if (displayItem(item).ignored) throw Error("notWatching");
+    if (item.repo === "get-bb/marketplace") throw Error("marketplaceUnmapped");
     if (item.closed || item.status === "done" || item.status === "muted")
       throw Error("itemResolved");
     await reconcile();
@@ -316,7 +395,9 @@ export default async function plugin(bb: BbPluginApi) {
     );
     const checkoutPath = checked.path;
     const group = [...items.values()].filter(
-      (i) => i.repo === item.repo && (i.id === id || i.status === "new"),
+      (i) =>
+        i.repo === item.repo &&
+        (i.id === id || (i.status === "new" && actionable(displayItem(i)))),
     );
     const prompt = reportOnly
       ? reportPrompt(item.repo, item.url, checkoutPath)
@@ -383,11 +464,17 @@ export default async function plugin(bb: BbPluginApi) {
     };
   }
   async function batchUnlocked(automatic = false) {
+    await loadInstalled();
     const threads: string[] = [],
       errors: string[] = [];
     const repos = new Set<string>();
     for (const item of [...items.values()]) {
-      if (item.status !== "new" || repos.has(item.repo)) continue;
+      if (
+        !actionable(displayItem(item)) ||
+        item.status !== "new" ||
+        repos.has(item.repo)
+      )
+        continue;
       repos.add(item.repo);
       try {
         const result = await runUnlocked(item.id, false, automatic);
@@ -421,11 +508,11 @@ export default async function plugin(bb: BbPluginApi) {
       {
         get: async (key) =>
           bb.storage.kv.get<CacheEntry>(
-            "http:" + createHash("sha256").update(key).digest("hex"),
+            "http:v2:" + createHash("sha256").update(key).digest("hex"),
           ),
         set: async (key, value) => {
           await bb.storage.kv.set(
-            "http:" + createHash("sha256").update(key).digest("hex"),
+            "http:v2:" + createHash("sha256").update(key).digest("hex"),
             value,
           );
         },
@@ -440,6 +527,7 @@ export default async function plugin(bb: BbPluginApi) {
       const old = items.get(incoming.id);
       const next = mergeItem(old, incoming);
       if (
+        actionable(displayItem(next)) &&
         next.status === "new" &&
         (!old || old.fingerprint !== incoming.fingerprint)
       )
@@ -454,61 +542,126 @@ export default async function plugin(bb: BbPluginApi) {
             )
           ).items
         : await api.pages(`/repos/${repo}/issues?state=open`);
-      const current = new Set<string>();
       for (const row of rows) {
-        const kind = marketplace
-          ? "marketplace"
-          : row.pull_request
-            ? "pr"
-            : "issue";
-        const parent = githubItem(repo, kind, row);
-        current.add(parent.id);
-        if (
-          row.user?.login?.toLowerCase() !== config.owner.toLowerCase() ||
-          marketplace
-        )
-          await accept(parent);
-        const comments = await api.pages(
-          `/repos/${repo}/issues/${row.number}/comments`,
-        );
-        for (const comment of comments)
-          if (comment.user?.login?.toLowerCase() !== config.owner.toLowerCase())
-            await accept({
-              ...githubItem(repo, "comment", comment, row.number),
-              title: `${row.title} · #${row.number}`,
-              closed: row.state === "closed",
+        try {
+          let target = repo;
+          let pull: any;
+          if (marketplace) {
+            pull = await api.get(`/repos/${repo}/pulls/${row.number}`);
+            const files = await api.pages(
+              `/repos/${repo}/pulls/${row.number}/files`,
+            );
+            const entries: unknown[] = [];
+            for (const file of files.filter((f) =>
+              /^entries\/[^/]+\.json$/.test(f.filename),
+            )) {
+              const entry = await api.get(
+                `/repos/${pull.head.repo.full_name}/contents/${file.filename}?ref=${encodeURIComponent(pull.head.sha)}`,
+              );
+              if (entry.encoding !== "base64")
+                throw Error("marketplaceUnmapped");
+              entries.push(
+                JSON.parse(
+                  Buffer.from(entry.content, "base64").toString("utf8"),
+                ),
+              );
+            }
+            target = marketplaceRepo(entries, config.owner, {
+              files: files.map((f) => f.filename),
+              title: row.title,
+              aliases,
             });
-        if (row.pull_request || marketplace) {
-          const reviews = await api.pages(
-            `/repos/${repo}/pulls/${row.number}/reviews`,
+          }
+          const decorate = (item: Item): Item => ({
+            ...item,
+            repo: target,
+            ...(marketplace ? { sourceRepo: repo } : {}),
+          });
+          const parent = decorate(
+            githubItem(
+              repo,
+              marketplace ? "marketplace" : row.pull_request ? "pr" : "issue",
+              row,
+            ),
           );
-          for (const review of reviews)
-            if (
-              review.user?.login?.toLowerCase() !== config.owner.toLowerCase()
-            )
-              await accept({
-                ...githubItem(repo, "review", review, row.number),
-                title: `${row.title} · ${review.state}`,
-                closed: row.state === "closed",
-              });
-          const inline = await api.pages(
-            `/repos/${repo}/pulls/${row.number}/comments`,
+          if (marketplace) {
+            const checks: any[] = [];
+            for (let page = 1; page <= 10; page++) {
+              const result = await api.get(
+                `/repos/${repo}/commits/${pull.head.sha}/check-runs?per_page=100&page=${page}`,
+              );
+              checks.push(...(result.check_runs ?? []));
+              if ((result.check_runs?.length ?? 0) < 100) break;
+              if (page === 10) throw Error("paginationLimit");
+            }
+            const statuses = await api.get(
+              `/repos/${repo}/commits/${pull.head.sha}/status`,
+            );
+            const failed =
+              checks.some((c) =>
+                [
+                  "failure",
+                  "timed_out",
+                  "action_required",
+                  "startup_failure",
+                ].includes(c.conclusion),
+              ) || ["failure", "error"].includes(statuses.state);
+            parent.status = failed ? "new" : "marketplace_waiting";
+            if (failed) parent.reason = "checksFailed";
+            parent.bot = false;
+            parent.fingerprint = JSON.stringify([
+              parent.fingerprint,
+              pull.head.sha,
+              failed,
+            ]);
+          }
+          if (
+            row.user?.login?.toLowerCase() !== config.owner.toLowerCase() ||
+            marketplace
+          )
+            await accept(parent);
+          const feedback = async (kind: "comment" | "review", rows: any[]) => {
+            for (const entry of rows)
+              if (
+                entry.user?.login?.toLowerCase() !==
+                  config.owner.toLowerCase() &&
+                !(
+                  kind === "review" &&
+                  ["PENDING", "DISMISSED"].includes(entry.state)
+                )
+              )
+                await accept(
+                  decorate({
+                    ...githubItem(repo, kind, entry, row.number),
+                    title: row.title,
+                    closed: row.state === "closed",
+                  }),
+                );
+          };
+          await feedback(
+            "comment",
+            await api.pages(`/repos/${repo}/issues/${row.number}/comments`),
           );
-          for (const comment of inline)
-            if (
-              comment.user?.login?.toLowerCase() !== config.owner.toLowerCase()
-            )
-              await accept({
-                ...githubItem(repo, "comment", comment, row.number),
-                title: `${row.title} · #${row.number}`,
-                closed: row.state === "closed",
-              });
+          if (row.pull_request || marketplace) {
+            await feedback(
+              "review",
+              await api.pages(`/repos/${repo}/pulls/${row.number}/reviews`),
+            );
+            await feedback(
+              "comment",
+              await api.pages(`/repos/${repo}/pulls/${row.number}/comments`),
+            );
+          }
+        } catch (e) {
+          errors.push(
+            `${repo} #${row.number}: ${e instanceof Error ? e.message : "pollFailed"}`,
+          );
         }
       }
       // Only explicit closed responses resolve an item; absence from a partial list never does.
       const tracked = [...items.values()].filter(
         (i) =>
-          i.repo === repo &&
+          (i.sourceRepo ?? i.repo) === repo &&
           !i.closed &&
           i.kind !== "ci" &&
           !rows.some((r: any) => r.number === i.number),
@@ -519,14 +672,18 @@ export default async function plugin(bb: BbPluginApi) {
           for (const item of tracked.filter((i) => i.number === number))
             await put({ ...item, closed: true, status: "done" });
       }
-      if (!marketplace) {
+      if (!marketplace && activePlugins.has(repo.toLowerCase())) {
         const details = await api.get(`/repos/${repo}`);
+        if (details.archived) {
+          archivedRepos.add(repo.toLowerCase());
+          return;
+        }
         const runs = await api.get(
           `/repos/${repo}/actions/runs?branch=${encodeURIComponent(details.default_branch)}&per_page=1`,
         );
         const latest = runs.workflow_runs?.[0];
         if (latest?.conclusion === "failure")
-          await accept(githubItem(repo, "ci", latest));
+          await accept({ ...githubItem(repo, "ci", latest), bot: false });
         if (latest?.conclusion === "success")
           for (const item of items.values())
             if (item.repo === repo && item.kind === "ci" && !item.closed)
@@ -539,14 +696,37 @@ export default async function plugin(bb: BbPluginApi) {
         const discovered = await api.pages(
           `/users/${config.owner}/repos?type=owner&sort=full_name`,
         );
+        archivedRepos = new Set(
+          discovered
+            .filter((r) => r.archived)
+            .map((r) => r.full_name.toLowerCase()),
+        );
         repos = discovered
           .filter(
             (r) =>
-              r.name.startsWith("bb-plugin-") || r.name === "claude-lane-stack",
+              r.name.startsWith("bb-plugin-") ||
+              r.name === "claude-lane-stack" ||
+              Object.keys(config.checkouts).some(
+                (repo) => repo.toLowerCase() === r.full_name.toLowerCase(),
+              ),
           )
           .map((r) => r.full_name);
       }
-      for (const repo of repos) {
+      await loadInstalled(repos);
+      if (config.repositories.length) {
+        for (const repo of repos) {
+          try {
+            const details = await api.get(`/repos/${repo}`);
+            if (details.archived) archivedRepos.add(repo.toLowerCase());
+            else archivedRepos.delete(repo.toLowerCase());
+          } catch (e) {
+            errors.push(
+              `${repo}: ${e instanceof Error ? e.message : "pollFailed"}`,
+            );
+          }
+        }
+      }
+      for (const repo of repos.filter(watching)) {
         if (pollSignal.aborted) break;
         try {
           await collect(repo);
@@ -567,6 +747,7 @@ export default async function plugin(bb: BbPluginApi) {
     } catch (e) {
       errors.push(e instanceof Error ? e.message : "pollFailed");
     }
+    await bb.storage.kv.set("archived-repos", [...archivedRepos]);
     await bb.storage.kv.set("anonymous-budget", budget);
     pollSignal.throwIfAborted();
     meta = {
@@ -584,6 +765,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.rpc.register(rpcContract, {
     list: () =>
       serial(async () => {
+        await loadInstalled();
         await reconcile();
         return snapshot();
       }),
@@ -724,7 +906,7 @@ export default async function plugin(bb: BbPluginApi) {
           text: JSON.stringify({
             count: attention(),
             items: [...items.values()]
-              .filter((i) => i.status === "new" || i.status === "waiting")
+              .filter((i) => actionable(displayItem(i)))
               .slice(0, limit)
               .map(({ id, repo, kind, title, url, status, threadId }) => ({
                 id,

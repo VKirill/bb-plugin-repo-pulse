@@ -216,3 +216,10 @@
 }
 
 .rp-settings { display:grid; gap:12px; } .rp-settings textarea { min-height:96px; } .rp-actions { display:flex; gap:6px; flex-wrap:wrap; } .rp-title { overflow-wrap:anywhere; }
+
+[data-rp-content] { container-type: inline-size; }
+@container (max-width: 560px) {
+  .rp-items table, .rp-items tbody { display: block; width: 100%; }
+  .rp-items tr { display: flex; flex-direction: column; width: 100%; }
+  .rp-items td { width: 100%; min-width: 0; max-width: none; }
+}

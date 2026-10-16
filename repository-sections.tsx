@@ -48,11 +48,13 @@ export function RepositorySection({
   const t = useStrings(),
     rpc = useRpc<typeof rpcContract>();
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
   async function act(fn: () => Promise<unknown>, message: string) {
     setBusy(true);
     try {
       await fn();
       reload();
+      setEditing(false);
       toast.success(message);
     } catch (e) {
       toast.error(errorText(e, t));
@@ -62,64 +64,94 @@ export function RepositorySection({
   }
   return (
     <div className="px-3 pb-3 space-y-2 text-xs" data-rp-binding={repo}>
-      <p>
-        {t.section}: <span>{route?.label || t.noSection}</span>
+      <p className="flex flex-wrap items-center gap-1">
+        {t.section}: <span>{route?.label || t.noSection}</span> ·
+        <Button
+          variant="link"
+          size="sm"
+          className="h-auto p-0 text-xs"
+          onClick={() => setEditing((v) => !v)}
+          aria-expanded={editing}
+        >
+          {t.editSection}
+        </Button>
       </p>
-      <p className="rp-title text-muted-foreground">
-        {t.checkout}: {route?.checkoutPath || t.configureCheckout}
-      </p>
-      <div className="flex flex-wrap gap-2 items-center">
-        <Label className="sr-only" htmlFor={`rp-section-${repo}`}>
-          {t.selectSection}
-        </Label>
-        <Select
-          disabled={busy}
-          value={route?.folderId ?? "auto"}
-          onValueChange={(folderId) =>
+      {editing && (
+        <>
+          <p className="rp-title text-muted-foreground">
+            {t.checkout}: {route?.checkoutPath || t.configureCheckout}
+          </p>
+          <div className="flex flex-wrap gap-2 items-center">
+            <Label className="sr-only" htmlFor={`rp-section-${repo}`}>
+              {t.selectSection}
+            </Label>
+            <Select
+              disabled={busy}
+              value={route?.folderId ?? "auto"}
+              onValueChange={(folderId) =>
+                void act(
+                  () =>
+                    rpc.call("bind_section", {
+                      repo,
+                      folderId: folderId === "auto" ? null : folderId,
+                    }),
+                  t.bindingSaved,
+                )
+              }
+            >
+              <SelectTrigger
+                id={`rp-section-${repo}`}
+                className="w-full max-w-md"
+                aria-label={`${t.section}: ${repo}`}
+              >
+                <SelectValue placeholder={t.selectSection} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">{t.automaticSection}</SelectItem>
+                {sections
+                  .filter(
+                    (s) => s.kind === "folder" && s.hostId === route?.hostId,
+                  )
+                  .map((s) => (
+                    <SelectItem key={s.id} value={s.id}>
+                      {sectionLabel(s, sections)}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+            {route?.status !== "ready" && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || !route?.checkoutPath}
+                onClick={() =>
+                  void act(
+                    () => rpc.call("create_section", { repo }),
+                    t.sectionCreated,
+                  )
+                }
+              >
+                {t.createSection}
+              </Button>
+            )}
+          </div>
+        </>
+      )}
+      {!editing && route?.status !== "ready" && (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy || !route?.checkoutPath}
+          onClick={() =>
             void act(
-              () =>
-                rpc.call("bind_section", {
-                  repo,
-                  folderId: folderId === "auto" ? null : folderId,
-                }),
-              t.bindingSaved,
+              () => rpc.call("create_section", { repo }),
+              t.sectionCreated,
             )
           }
         >
-          <SelectTrigger
-            id={`rp-section-${repo}`}
-            className="w-full max-w-md"
-            aria-label={`${t.section}: ${repo}`}
-          >
-            <SelectValue placeholder={t.selectSection} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="auto">{t.automaticSection}</SelectItem>
-            {sections
-              .filter((s) => s.kind === "folder" && s.hostId === route?.hostId)
-              .map((s) => (
-                <SelectItem key={s.id} value={s.id}>
-                  {sectionLabel(s, sections)}
-                </SelectItem>
-              ))}
-          </SelectContent>
-        </Select>
-        {route?.status !== "ready" && (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy || !route?.checkoutPath}
-            onClick={() =>
-              void act(
-                () => rpc.call("create_section", { repo }),
-                t.sectionCreated,
-              )
-            }
-          >
-            {t.createSection}
-          </Button>
-        )}
-      </div>
+          {t.createSection}
+        </Button>
+      )}
       {route && route.status !== "ready" && (
         <p className="rp-pill rp-pill-warning">{t[route.status]}</p>
       )}

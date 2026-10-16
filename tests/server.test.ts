@@ -19,6 +19,7 @@ export async function setup() {
     experimental_callHostRpc: async (call: any) => ({ path: call.input.path }),
     sdk: {
       plugins: {
+        list: async () => ({ plugins: [] }),
         callRpc: async (args: any) =>
           args.method === "sections_list"
             ? {
@@ -162,6 +163,7 @@ describe("collector integration", () => {
     const h = createFakePluginHost({
       settings: { githubToken: "test-only" },
       pluginId: "repo-pulse",
+      sdk: { plugins: { list: async () => ({ plugins: [] }) } },
     });
     try {
       await plugin(h.bb);
@@ -209,6 +211,7 @@ describe("poller disposal", () => {
     const h = createFakePluginHost({
       settings: { githubToken: "test-only" },
       pluginId: "repo-pulse",
+      sdk: { plugins: { list: async () => ({ plugins: [] }) } },
     });
     try {
       await plugin(h.bb);
@@ -345,6 +348,66 @@ it("creates a missing section through project-folders and binds its existing che
       status: "ready",
       checkoutPath: "/work/repo",
     });
+  } finally {
+    await h.harness.lifecycle.dispose();
+  }
+});
+
+it("dispatches marketplace feedback in the plugin folder and groups all sources once, excluding bots", async () => {
+  let h = await setup();
+  try {
+    await h.bb.storage.kv.set("item:market", {
+      ...first,
+      id: "market",
+      sourceRepo: "get-bb/marketplace",
+      kind: "marketplace",
+      url: "https://github.com/get-bb/marketplace/pull/42",
+      reason: "checksFailed",
+    });
+    await h.bb.storage.kv.set("item:bot", {
+      ...first,
+      id: "bot",
+      author: "dependabot[bot]",
+      bot: true,
+    });
+    h = await h.harness.lifecycle.reload(plugin);
+    const result: any = await h.harness.behavior.callRpc("batch", null);
+    expect(result.threads).toEqual(["thr_safe"]);
+    const calls = h.harness.inspection.sdk.callsTo("threads.spawn");
+    expect(calls).toHaveLength(1);
+    expect(JSON.stringify(calls)).toContain("/work/repo");
+    expect(JSON.stringify(calls)).toContain("marketplace/pull/42");
+    expect(JSON.stringify(calls)).not.toContain("dependabot");
+    const data: any = await h.harness.behavior.callRpc("list", null);
+    expect(data.items.find((i: any) => i.id === "bot").status).toBe("new");
+  } finally {
+    await h.harness.lifecycle.dispose();
+  }
+});
+
+it("blocks launch when the installed plugin is disabled", async () => {
+  const h = await setup();
+  try {
+    h.harness.sdk.stub(
+      "plugins.list",
+      async () =>
+        ({
+          plugins: [
+            {
+              id: "repo",
+              enabled: false,
+              source: "git:https://github.com/owner/repo.git@^0.1.0",
+            },
+          ],
+        }) as any,
+    );
+    await expect(
+      h.harness.behavior.callRpc("run", { id: first.id }),
+    ).rejects.toThrow("notWatching");
+    const data: any = await h.harness.behavior.callRpc("list", null);
+    expect(data.count).toBe(0);
+    expect(data.items[0].ignored).toBe(true);
+    expect(h.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
   } finally {
     await h.harness.lifecycle.dispose();
   }

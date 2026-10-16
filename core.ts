@@ -10,6 +10,9 @@ export const configSchema = z.object({
     .array(z.string().regex(/^[\w.-]+\/[\w.-]+$/))
     .max(100)
     .default([]),
+  excludedRepositories: z
+    .array(z.string().regex(/^[\w.-]+\/[\w.-]+$/))
+    .default(["VKirill/bb-plugin-agency"]),
   projectId: z.string().default(""),
   hostId: z.string().default(""),
   scanRoot: z.string().default(""),
@@ -29,6 +32,10 @@ export type Config = z.infer<typeof configSchema>;
 export const itemSchema = z.object({
   id: z.string(),
   repo: z.string(),
+  sourceRepo: z.string().optional(),
+  reason: z.enum(["checksFailed"]).optional(),
+  bot: z.boolean().optional(),
+  ignored: z.boolean().optional(),
   kind: z.enum(["issue", "pr", "comment", "review", "ci", "marketplace"]),
   number: z.number(),
   author: z.string(),
@@ -36,7 +43,14 @@ export const itemSchema = z.object({
   url: z.string().url(),
   updated: z.string(),
   fingerprint: z.string(),
-  status: z.enum(["new", "running", "waiting", "done", "muted"]),
+  status: z.enum([
+    "new",
+    "running",
+    "waiting",
+    "done",
+    "muted",
+    "marketplace_waiting",
+  ]),
   closed: z.boolean(),
   threadId: z.string().optional(),
   seen: z.string().optional(),
@@ -55,9 +69,13 @@ export function mergeItem(previous: Item | undefined, incoming: Item): Item {
         ? "muted"
         : previous.status === "running"
           ? "running"
-          : changed
-            ? "new"
-            : previous.status,
+          : incoming.status === "marketplace_waiting"
+            ? "marketplace_waiting"
+            : changed
+              ? "new"
+              : previous.status === "marketplace_waiting"
+                ? incoming.status
+                : previous.status,
   };
 }
 export function threadStatus(item: Item, active: boolean): Item {
@@ -69,7 +87,9 @@ export function threadStatus(item: Item, active: boolean): Item {
         ? "muted"
         : active
           ? "running"
-          : "waiting",
+          : item.kind === "marketplace" && !item.reason
+            ? "marketplace_waiting"
+            : "waiting",
   };
 }
 export function repoFromRemote(remote: string): string | null {
@@ -169,6 +189,17 @@ export class Github {
                 .filter(([k]) =>
                   [
                     "items",
+                    "type",
+                    "archived",
+                    "sha",
+                    "filename",
+                    "content",
+                    "encoding",
+                    "check_runs",
+                    "statuses",
+                    "source",
+                    "git",
+                    "url",
                     "id",
                     "name",
                     "full_name",
@@ -229,6 +260,7 @@ export function githubItem(
     kind,
     number,
     author: row.user?.login ?? "github-actions",
+    bot: row.user?.type === "Bot" || isBot(row.user?.login ?? "github-actions"),
     title: (row.title ?? row.name ?? `${kind} #${number}`).slice(0, 500),
     url: row.html_url,
     updated,
@@ -236,4 +268,97 @@ export function githubItem(
     status: row.state === "closed" ? "done" : "new",
     closed: row.state === "closed",
   };
+}
+
+export function isBot(login: string) {
+  return /\[bot\]$|^(dependabot|renovate|github-actions|dependabot-preview)(?:-|$)/i.test(
+    login,
+  );
+}
+export function needsAttention(item: Item) {
+  return (
+    !item.closed &&
+    !item.ignored &&
+    !item.bot &&
+    !isBot(item.author) &&
+    (item.status === "new" || item.status === "waiting")
+  );
+}
+// CI is posted by GitHub Actions but is an actionable repository signal.
+export function actionable(item: Item) {
+  return (
+    needsAttention(item) ||
+    (item.kind === "ci" &&
+      !item.closed &&
+      !item.ignored &&
+      ["new", "waiting"].includes(item.status))
+  );
+}
+export function installedRepo(
+  plugin: { id: string; source: string },
+  owner: string,
+  repos: string[],
+) {
+  const git = plugin.source.match(
+    /github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?(?:@|$)/i,
+  )?.[1];
+  if (git) return git;
+  const slug = plugin.source.startsWith("path:")
+    ? plugin.source.split("/").pop()!
+    : `bb-plugin-${plugin.id}`;
+  return (
+    repos.find((r) => r.toLowerCase() === `${owner}/${slug}`.toLowerCase()) ??
+    repos.find(
+      (r) =>
+        r.toLowerCase() === `${owner}/bb-plugin-${plugin.id}`.toLowerCase(),
+    )
+  );
+}
+export function marketplaceRepo(
+  entries: unknown[],
+  owner: string,
+  fallback?: {
+    files: string[];
+    title: string;
+    aliases: { repo: string; names: string[] }[];
+  },
+): string {
+  const repos = new Set(
+    entries
+      .map((entry: any) => repoFromRemote(entry?.source?.git?.url ?? ""))
+      .filter(
+        (r): r is string =>
+          !!r && r.split("/")[0].toLowerCase() === owner.toLowerCase(),
+      ),
+  );
+  if (!entries.length && fallback) {
+    const normalize = (s: string) =>
+      s
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+    const slugs = fallback.files.flatMap(
+      (file) =>
+        file.match(/^(?:entries|overview|screenshots)\/([^/.]+)/)?.[1] ?? [],
+    );
+    const byPath = fallback.aliases.filter((a) =>
+      a.names.some((name) =>
+        slugs.some((slug) => normalize(name) === normalize(slug)),
+      ),
+    );
+    const candidates = byPath.length
+      ? byPath
+      : fallback.aliases.filter((a) =>
+          a.names.some(
+            (name) =>
+              normalize(name).length > 2 &&
+              ` ${normalize(fallback.title)} `.includes(` ${normalize(name)} `),
+          ),
+        );
+    for (const candidate of candidates)
+      if (candidate.repo.split("/")[0].toLowerCase() === owner.toLowerCase())
+        repos.add(candidate.repo);
+  }
+  if (repos.size !== 1) throw Error("marketplaceUnmapped");
+  return [...repos][0];
 }

@@ -1,4 +1,13 @@
 export const en = {
+  checksFailed: "PR checks failed",
+  editSection: "change",
+  bots: "Bots",
+  marketplace_waiting: "Waiting for marketplace",
+  excludedRepositories:
+    "Do not watch (one owner/repo per line; disabled and archived plugins are also excluded)",
+  notWatching: "Not watched",
+  marketplaceUnmapped:
+    "Could not identify the plugin from the marketplace entry. Agent launch is blocked.",
   secretLabel: "secret",
   notSet: "[not set]",
   description:
@@ -107,6 +116,15 @@ export const en = {
     "Choose a BB project, machine and scan folder before launching agents.",
 };
 export const ru: Record<keyof typeof en, string> = {
+  checksFailed: "Проверки PR не прошли",
+  editSection: "изменить",
+  bots: "Боты",
+  marketplace_waiting: "Ждёт маркетплейс",
+  excludedRepositories:
+    "Не следить (owner/repo по одному в строке; выключенные и архивные плагины также исключены)",
+  notWatching: "Не отслеживается",
+  marketplaceUnmapped:
+    "Не удалось определить плагин по записи маркетплейса. Запуск агента заблокирован.",
   secretLabel: "секрет",
   notSet: "[не задан]",
   description:
