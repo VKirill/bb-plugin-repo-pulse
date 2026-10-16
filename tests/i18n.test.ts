@@ -15,6 +15,7 @@ afterEach(() => {
   document.documentElement.lang = "en";
   document.documentElement.removeAttribute("data-pk-lang");
   localStorage.clear();
+  history.replaceState(null, "", "/");
 });
 describe("complete interface localization", () => {
   it("has identical EN and RU dictionary keys", () => {
@@ -89,4 +90,18 @@ describe("complete interface localization", () => {
     }
     expect(violations).toEqual([]);
   });
+});
+
+it("localizes secret-field labels only on its own plugin settings page", async () => {
+  document.documentElement.setAttribute("data-pk-lang", "ru");
+  history.replaceState(null, "", "/settings/plugins/repo-pulse");
+  document.body.innerHTML = `<p>${en.token}</p><span>${en.secretLabel}</span>`;
+  const stop = mountChromeLocalization();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.querySelector("span")?.textContent).toBe(ru.secretLabel);
+    expect(document.querySelector("p")?.textContent).toBe(ru.token);
+  } finally {
+    stop();
+  }
 });

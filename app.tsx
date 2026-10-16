@@ -277,7 +277,7 @@ function Page() {
           <div className="rp-actions ml-auto">
             <Button
               className="rp-accent"
-              disabled={busy || dry}
+              disabled={busy || dry || reportOnly}
               onClick={() =>
                 void action(async () => {
                   const result = await rpc.call("batch");

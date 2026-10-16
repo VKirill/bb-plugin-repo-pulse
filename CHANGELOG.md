@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3 — 2026-10-16
+
+- Disable bulk dispatch while read-only report mode is selected; verify the actual Russian page in the SDK UI harness.
+- Localize native secret labels only on Repo Pulse’s own settings page.
+- Live verification: report agent filed under Plugins / Agency, ran in the repository root, returned a read-only CI report and was stopped.
+
 ## 0.1.2 — 2026-10-16
 
 - Follow BB’s Russian interface when the Russifier leaves html lang as English; localize the entire page, header, settings, notifications and own plugin labels. Add dictionary coverage and JSX checks.

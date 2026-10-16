@@ -1,4 +1,5 @@
 export const en = {
+  secretLabel: "secret",
   description:
     "Track plugin issues, pull requests, reviews and failing checks; dispatch linked agents safely per repository.",
   token: "GitHub token",
@@ -105,6 +106,7 @@ export const en = {
     "Choose a BB project, machine and scan folder before launching agents.",
 };
 export const ru: Record<keyof typeof en, string> = {
+  secretLabel: "секрет",
   description:
     "Следит за предложениями, запросами на слияние, отзывами и ошибками проверок плагинов; запускает связанного агента для каждого репозитория.",
   token: "Токен GitHub",

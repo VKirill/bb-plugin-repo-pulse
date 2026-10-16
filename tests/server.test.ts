@@ -295,3 +295,57 @@ describe("section-aware dispatch", () => {
     }
   });
 });
+
+it("creates a missing section through project-folders and binds its existing checkout", async () => {
+  const h = await setup();
+  const rows: any[] = [
+    {
+      id: "parent",
+      projectId: "project",
+      hostId: "host",
+      name: "Plugins",
+      parentId: null,
+      path: "/work",
+      kind: "folder",
+    },
+  ];
+  try {
+    const value = (await h.harness.behavior.callRpc("config", null)) as any;
+    await h.harness.behavior.callRpc("save_config", {
+      ...value,
+      scanRoot: "/work",
+    });
+    h.harness.sdk.stub("plugins.callRpc", async (args: any) => {
+      if (args.method === "sections_list") return { sections: rows };
+      if (args.method === "create") {
+        expect(args.input).toMatchObject({
+          projectId: "project",
+          folderId: "parent",
+          hostId: "host",
+          relativePath: "/work/repo",
+        });
+        rows.push({
+          id: "created",
+          projectId: "project",
+          hostId: "host",
+          name: "repo",
+          parentId: "parent",
+          path: "/work/repo",
+          kind: "folder",
+        });
+        return { id: "created" };
+      }
+      throw Error("unexpected");
+    });
+    const route = await h.harness.behavior.callRpc("create_section", {
+      repo: "owner/repo",
+    });
+    expect(route).toMatchObject({
+      folderId: "created",
+      status: "ready",
+      checkoutPath: "/work/repo",
+    });
+  } finally {
+    await h.harness.lifecycle.dispose();
+  }
+});

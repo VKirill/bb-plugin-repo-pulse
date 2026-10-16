@@ -94,9 +94,10 @@ export function errorText(error: unknown, t: typeof en): string {
 }
 /** SDK metadata is plain text. Localize only our own host-owned labels, never other plugins or GitHub content. */
 export function mountChromeLocalization() {
-  const pairs = ([en.title, en.description, en.token] as string[]).map(
-    (text, i) => [text, [ru.title, ru.description, ru.token][i]],
-  );
+  const pairs = ([en.title, en.description] as string[]).map((text, i) => [
+    text,
+    [ru.title, ru.description][i],
+  ]);
   let scheduled = false,
     disposed = false;
   function sync() {
@@ -106,8 +107,12 @@ export function mountChromeLocalization() {
       scheduled = false;
       if (disposed) return;
       const t = strings();
+      const currentPairs =
+        location.pathname === "/settings/plugins/repo-pulse"
+          ? [...pairs, [en.token, ru.token], [en.secretLabel, ru.secretLabel]]
+          : pairs;
       const translate = (text: string) => {
-        for (const [english, russian] of pairs)
+        for (const [english, russian] of currentPairs)
           if (text === english || text === russian)
             return t === ru ? russian : english;
         return text;
