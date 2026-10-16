@@ -33,7 +33,7 @@ export const itemSchema = z.object({
   id: z.string(),
   repo: z.string(),
   sourceRepo: z.string().optional(),
-  reason: z.enum(["checksFailed"]).optional(),
+  reason: z.enum(["checksFailed", "maintainerLabel"]).optional(),
   bot: z.boolean().optional(),
   ignored: z.boolean().optional(),
   kind: z.enum(["issue", "pr", "comment", "review", "ci", "marketplace"]),
@@ -50,6 +50,7 @@ export const itemSchema = z.object({
     "done",
     "muted",
     "marketplace_waiting",
+    "maintainer_waiting",
   ]),
   closed: z.boolean(),
   threadId: z.string().optional(),
@@ -69,11 +70,15 @@ export function mergeItem(previous: Item | undefined, incoming: Item): Item {
         ? "muted"
         : previous.status === "running"
           ? "running"
-          : incoming.status === "marketplace_waiting"
-            ? "marketplace_waiting"
+          : ["marketplace_waiting", "maintainer_waiting"].includes(
+                incoming.status,
+              )
+            ? incoming.status
             : changed
               ? "new"
-              : previous.status === "marketplace_waiting"
+              : ["marketplace_waiting", "maintainer_waiting"].includes(
+                    previous.status,
+                  )
                 ? incoming.status
                 : previous.status,
   };
@@ -87,9 +92,11 @@ export function threadStatus(item: Item, active: boolean): Item {
         ? "muted"
         : active
           ? "running"
-          : item.kind === "marketplace" && !item.reason
-            ? "marketplace_waiting"
-            : "waiting",
+          : item.kind === "marketplace" && item.reason === "maintainerLabel"
+            ? "maintainer_waiting"
+            : item.kind === "marketplace" && !item.reason
+              ? "marketplace_waiting"
+              : "waiting",
   };
 }
 export function repoFromRemote(remote: string): string | null {
@@ -146,7 +153,11 @@ export class Github {
   ) {
     this.authenticated = !!token;
   }
-  async get(path: string): Promise<any> {
+  private async request(
+    path: string,
+    etag?: string,
+    log = false,
+  ): Promise<Response> {
     if (!path.startsWith("/") || path.startsWith("//"))
       throw Error("Invalid GitHub endpoint");
     if (Date.now() > this.budget.reset) {
@@ -156,7 +167,6 @@ export class Github {
     if (!this.token && this.budget.used >= 45) throw Error("anonymousLimit");
     if (this.remaining === 0 && Date.now() < (this.reset ?? 0))
       throw Error("rateLimit");
-    const old = await this.cache.get(path);
     this.budget.used++;
     this.requests++;
     const response = await this.fetcher("https://api.github.com" + path, {
@@ -164,18 +174,23 @@ export class Github {
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
-        ...(old?.etag ? { "If-None-Match": old.etag } : {}),
+        ...(etag ? { "If-None-Match": etag } : {}),
       },
       signal: AbortSignal.any([
         AbortSignal.timeout(20000),
         ...(this.signal ? [this.signal] : []),
       ]),
-      redirect: "error",
+      redirect: log ? "manual" : "error",
     });
     const remain = response.headers.get("x-ratelimit-remaining");
     if (remain !== null) this.remaining = Number(remain);
     const reset = response.headers.get("x-ratelimit-reset");
     if (reset) this.reset = Number(reset) * 1000;
+    return response;
+  }
+  async get(path: string): Promise<any> {
+    const old = await this.cache.get(path);
+    const response = await this.request(path, old?.etag);
     if (response.status === 304 && old) return old.data;
     if (!response.ok) throw Error(`GitHub HTTP ${response.status}`);
     // Persist only the fields the collector consumes. Never persist bodies or tokens.
@@ -189,6 +204,15 @@ export class Github {
                 .filter(([k]) =>
                   [
                     "items",
+                    "details_url",
+                    "completed_at",
+                    "steps",
+                    "output",
+                    "summary",
+                    "text",
+                    "annotation_level",
+                    "message",
+                    "raw_details",
                     "type",
                     "archived",
                     "sha",
@@ -232,6 +256,53 @@ export class Github {
       data: value,
     });
     return value;
+  }
+  async jobLog(repo: string, jobId: string): Promise<string> {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^\d+$/.test(jobId))
+      throw Error("gateEvidenceUnavailable");
+    let response = await this.request(
+      `/repos/${repo}/actions/jobs/${jobId}/logs`,
+      undefined,
+      true,
+    );
+    if (response.status === 302) {
+      const url = new URL(response.headers.get("location") ?? "");
+      if (
+        url.protocol !== "https:" ||
+        url.username ||
+        url.password ||
+        !/(?:^|\.)(?:githubusercontent\.com|blob\.core\.windows\.net|github\.com)$/.test(
+          url.hostname,
+        )
+      )
+        throw Error("gateEvidenceUnavailable");
+      // The signed download URL gets no GitHub token; raw logs never enter persistent storage.
+      response = await this.fetcher(url, {
+        headers: { Accept: "text/plain" },
+        redirect: "error",
+        signal: AbortSignal.any([
+          AbortSignal.timeout(20000),
+          ...(this.signal ? [this.signal] : []),
+        ]),
+      });
+    }
+    if (!response.ok || !response.body) throw Error("gateEvidenceUnavailable");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let text = "",
+      bytes = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > 2 * 1024 * 1024) throw Error("gateEvidenceUnavailable");
+        text += decoder.decode(value, { stream: true });
+      }
+      return text + decoder.decode();
+    } finally {
+      await reader.cancel();
+    }
   }
   async pages(path: string): Promise<any[]> {
     const out: any[] = [];
@@ -279,6 +350,7 @@ export function needsAttention(item: Item) {
   return (
     !item.closed &&
     !item.ignored &&
+    item.reason !== "maintainerLabel" &&
     !item.bot &&
     !isBot(item.author) &&
     (item.status === "new" || item.status === "waiting")

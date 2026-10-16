@@ -86,6 +86,14 @@ it("keeps calm marketplace/bot/disabled groups out of attention and reveals sect
             },
             {
               ...base,
+              id: "gate",
+              repo: "VKirill/gate",
+              kind: "marketplace",
+              status: "maintainer_waiting",
+              reason: "maintainerLabel",
+            },
+            {
+              ...base,
               id: "bot",
               repo: "VKirill/bots",
               kind: "pr",
@@ -131,6 +139,11 @@ it("keeps calm marketplace/bot/disabled groups out of attention and reveals sect
     expect(slot.queryByRole("heading", { name: "VKirill/plugin" })).toBeNull();
     fireEvent.click(slot.getByRole("button", { name: ru.all }));
     await slot.findByText(ru.marketplace_waiting);
+    const gateLabel = await slot.findByText(ru.maintainer_waiting);
+    expect(
+      (gateLabel.closest("tr")?.querySelector("button") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
     expect(slot.queryAllByRole("columnheader")).toHaveLength(0);
     expect(slot.queryAllByRole("combobox")).toHaveLength(0);
     fireEvent.click(slot.getAllByRole("button", { name: ru.editSection })[0]);

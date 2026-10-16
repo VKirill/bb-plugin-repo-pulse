@@ -1,4 +1,7 @@
 export const en = {
+  maintainer_waiting: "Waiting for maintainer label",
+  gateEvidenceUnavailable:
+    "Could not verify the failed check log; it still needs attention.",
   checksFailed: "PR checks failed",
   editSection: "change",
   bots: "Bots",
@@ -116,6 +119,9 @@ export const en = {
     "Choose a BB project, machine and scan folder before launching agents.",
 };
 export const ru: Record<keyof typeof en, string> = {
+  maintainer_waiting: "Ждёт метку сопровождающего",
+  gateEvidenceUnavailable:
+    "Не удалось проверить лог ошибки; пункт по-прежнему требует внимания.",
   checksFailed: "Проверки PR не прошли",
   editSection: "изменить",
   bots: "Боты",

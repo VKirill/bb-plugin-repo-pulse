@@ -1,4 +1,5 @@
 import { DEFAULT_CONTRACT, LEGACY_CONTRACT } from "./agent-contract";
+import { failedCheck, gateStep, maintainerGateOnly } from "./checks";
 import { en } from "./messages";
 import { createHash } from "node:crypto";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
@@ -194,8 +195,12 @@ export default async function plugin(bb: BbPluginApi) {
   const displayItem = (item: Item): Item => ({
     ...item,
     ignored:
-      !watching(item.repo) ||
-      (item.kind === "ci" && !activePlugins.has(item.repo.toLowerCase())),
+      item.sourceRepo === "get-bb/marketplace"
+        ? config.excludedRepositories.some(
+            (r) => r.toLowerCase() === item.repo.toLowerCase(),
+          )
+        : !watching(item.repo) ||
+          (item.kind === "ci" && !activePlugins.has(item.repo.toLowerCase())),
   });
   const attention = () =>
     [...items.values()].filter((i) => actionable(displayItem(i))).length;
@@ -367,6 +372,11 @@ export default async function plugin(bb: BbPluginApi) {
     if (!item) throw Error("itemMissing");
     await loadInstalled();
     if (displayItem(item).ignored) throw Error("notWatching");
+    if (
+      item.reason === "maintainerLabel" ||
+      item.status === "maintainer_waiting"
+    )
+      throw Error("maintainer_waiting");
     if (item.repo === "get-bb/marketplace") throw Error("marketplaceUnmapped");
     if (item.closed || item.status === "done" || item.status === "muted")
       throw Error("itemResolved");
@@ -508,11 +518,11 @@ export default async function plugin(bb: BbPluginApi) {
       {
         get: async (key) =>
           bb.storage.kv.get<CacheEntry>(
-            "http:v2:" + createHash("sha256").update(key).digest("hex"),
+            "http:v3:" + createHash("sha256").update(key).digest("hex"),
           ),
         set: async (key, value) => {
           await bb.storage.kv.set(
-            "http:v2:" + createHash("sha256").update(key).digest("hex"),
+            "http:v3:" + createHash("sha256").update(key).digest("hex"),
             value,
           );
         },
@@ -597,22 +607,81 @@ export default async function plugin(bb: BbPluginApi) {
             const statuses = await api.get(
               `/repos/${repo}/commits/${pull.head.sha}/status`,
             );
-            const failed =
-              checks.some((c) =>
-                [
-                  "failure",
-                  "timed_out",
-                  "action_required",
-                  "startup_failure",
-                ].includes(c.conclusion),
-              ) || ["failure", "error"].includes(statuses.state);
-            parent.status = failed ? "new" : "marketplace_waiting";
-            if (failed) parent.reason = "checksFailed";
+            const failed = checks.filter((c) => failedCheck(c.conclusion));
+            let gateOnlyCount = 0;
+            for (const check of failed) {
+              if (
+                check.conclusion !== "failure" ||
+                !Number.isSafeInteger(check.id) ||
+                !check.completed_at
+              )
+                continue;
+              const key = `gate-result:v1:${check.id}:${check.completed_at}`;
+              const cached = await bb.storage.kv.get<{ gateOnly: boolean }>(
+                key,
+              );
+              let gateOnly = cached?.gateOnly;
+              if (gateOnly === undefined) {
+                try {
+                  const annotations = await api.pages(
+                    `/repos/${repo}/check-runs/${check.id}/annotations`,
+                  );
+                  const detailPath = new URL(
+                    check.details_url ?? "https://github.com/",
+                  );
+                  const jobId =
+                    detailPath.hostname === "github.com" &&
+                    detailPath.pathname.startsWith(`/${repo}/actions/runs/`)
+                      ? detailPath.pathname.match(/\/job\/(\d+)(?:\/|$)/)?.[1]
+                      : undefined;
+                  const job = jobId
+                    ? await api.get(`/repos/${repo}/actions/jobs/${jobId}`)
+                    : undefined;
+                  const failures = job?.steps?.filter((step: any) =>
+                    failedCheck(step.conclusion),
+                  );
+                  let log = "";
+                  if (
+                    jobId &&
+                    failures?.length &&
+                    failures.every((step: any) => gateStep(step.name)) &&
+                    !maintainerGateOnly(check, annotations, job.steps)
+                  )
+                    log = await api.jobLog(repo, jobId);
+                  gateOnly = maintainerGateOnly(
+                    check,
+                    annotations,
+                    job?.steps,
+                    log,
+                  );
+                  await bb.storage.kv.set(key, { gateOnly });
+                } catch {
+                  // Unknown evidence is a real failure until a later poll can verify the gate.
+                  errors.push(
+                    `${repo} #${row.number}: gateEvidenceUnavailable`,
+                  );
+                  gateOnly = false;
+                }
+              }
+              if (gateOnly) gateOnlyCount++;
+            }
+            const otherFailure =
+              failed.length > gateOnlyCount ||
+              ["failure", "error"].includes(statuses.state);
+            const waitingLabel = !otherFailure && gateOnlyCount > 0;
+            parent.status = otherFailure
+              ? "new"
+              : waitingLabel
+                ? "maintainer_waiting"
+                : "marketplace_waiting";
+            if (otherFailure) parent.reason = "checksFailed";
+            else if (waitingLabel) parent.reason = "maintainerLabel";
             parent.bot = false;
             parent.fingerprint = JSON.stringify([
               parent.fingerprint,
               pull.head.sha,
-              failed,
+              otherFailure,
+              waitingLabel,
             ]);
           }
           if (
@@ -793,7 +862,14 @@ export default async function plugin(bb: BbPluginApi) {
         const item = items.get(id);
         if (!item) throw Error("itemMissing");
         if (item.status === "running") throw Error("repoBusy");
-        await put({ ...item, status, seen: item.fingerprint });
+        await put({
+          ...item,
+          status:
+            status === "new" && item.reason === "maintainerLabel"
+              ? "maintainer_waiting"
+              : status,
+          seen: item.fingerprint,
+        });
         publish();
         return true;
       }),

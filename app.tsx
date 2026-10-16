@@ -410,16 +410,19 @@ function Page() {
                                 {t[kindKeys[item.kind]]}
                               </span>
                               <span
-                                className={`rp-pill ${item.status === "marketplace_waiting" || item.ignored ? "rp-pill-neutral" : item.status === "done" ? "rp-pill-success" : item.status === "running" ? "rp-pill-info" : "rp-pill-warning"}`}
+                                className={`rp-pill ${["marketplace_waiting", "maintainer_waiting"].includes(item.status) || item.ignored ? "rp-pill-neutral" : item.status === "done" ? "rp-pill-success" : item.status === "running" ? "rp-pill-info" : "rp-pill-warning"}`}
                               >
-                                {item.ignored
-                                  ? t.notWatching
-                                  : item.reason &&
-                                      ["new", "waiting"].includes(item.status)
-                                    ? t[item.reason]
-                                    : statusLabel(item, t)}
+                                {item.reason === "checksFailed" &&
+                                ["new", "waiting"].includes(item.status)
+                                  ? t.checksFailed
+                                  : statusLabel(item, t)}
                               </span>
                             </div>
+                            {item.ignored && (
+                              <span className="rp-pill rp-pill-muted">
+                                {t.notWatching}
+                              </span>
+                            )}
                             <p className="rp-title font-medium">{item.title}</p>
                             <p className="text-xs text-muted-foreground">
                               @{item.author} · #{item.number} ·{" "}
@@ -442,11 +445,15 @@ function Page() {
                                 disabled={
                                   busy ||
                                   item.ignored ||
+                                  item.reason === "maintainerLabel" ||
                                   routeData.routes.find((r) => r.repo === repo)
                                     ?.status !== "ready" ||
-                                  ["running", "done", "muted"].includes(
-                                    item.status,
-                                  )
+                                  [
+                                    "running",
+                                    "done",
+                                    "muted",
+                                    "maintainer_waiting",
+                                  ].includes(item.status)
                                 }
                                 onClick={() =>
                                   void action(async () => {

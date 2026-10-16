@@ -201,7 +201,7 @@ describe("marketplace collector policy", () => {
         repo: "owner/bb-plugin-test",
         sourceRepo: "get-bb/marketplace",
         status: "marketplace_waiting",
-        ignored: true,
+        ignored: false,
       });
       expect(requests).not.toContain("/repos/owner/bb-plugin-test/issues");
       enabled = true;
