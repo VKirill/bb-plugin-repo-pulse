@@ -368,14 +368,18 @@ function Page() {
               {t.bots}
             </Button>
           </div>
-          <Switch id="rp-dry" checked={dry} onCheckedChange={setDry} />
-          <Label htmlFor="rp-dry">{t.dryMode}</Label>
-          <Switch
-            id="rp-report"
-            checked={reportOnly}
-            onCheckedChange={setReportOnly}
-          />
-          <Label htmlFor="rp-report">{t.reportOnly}</Label>
+          <div className="flex items-center gap-2">
+            <Switch id="rp-dry" checked={dry} onCheckedChange={setDry} />
+            <Label htmlFor="rp-dry">{t.dryMode}</Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <Switch
+              id="rp-report"
+              checked={reportOnly}
+              onCheckedChange={setReportOnly}
+            />
+            <Label htmlFor="rp-report">{t.reportOnly}</Label>
+          </div>
         </div>
         {data === null ? (
           <Skeleton className="h-32 w-full" />
