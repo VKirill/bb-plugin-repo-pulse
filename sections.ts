@@ -101,6 +101,3 @@ export function resolveRoute(
     status: "ready",
   };
 }
-export function reportPrompt(repo: string, url: string, checkoutPath: string) {
-  return `READ-ONLY REPORT MODE. The owner authorizes only reading this repository and the linked GitHub request, discussion or CI run. Start by running pwd and git status --short; report the working directory. Read the linked item, analyze what is requested and summarize your recommendation in Russian. Do not edit any file, create a branch, commit, push, merge, release, post comments, or close items. Do not delegate or spawn agents. Stop after your short report. This report mode overrides any standing maintenance instructions.\nGitHub data: ${JSON.stringify({ repo, url, checkoutPath })}`;
-}

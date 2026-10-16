@@ -109,8 +109,8 @@ describe("dispatch lifecycle", () => {
     });
     const data = (await h.harness.behavior.callRpc("list", null)) as any;
     expect(data.items.map((i: any) => i.status)).toEqual([
-      "waiting",
-      "waiting",
+      "awaiting_decision",
+      "awaiting_decision",
     ]);
     await h.harness.lifecycle.dispose();
   });
@@ -243,12 +243,11 @@ describe("section-aware dispatch", () => {
     try {
       const result = (await h.harness.behavior.callRpc("run", {
         id: first.id,
-        reportOnly: true,
       })) as any;
       expect(result.folderId).toBe("folder");
       const spawn = h.harness.inspection.sdk.callsTo("threads.spawn")[0] as any;
       expect(JSON.stringify(spawn)).toContain("/work/repo");
-      expect(JSON.stringify(spawn)).toContain("READ-ONLY REPORT MODE");
+      expect(JSON.stringify(spawn)).toContain("STAGE 1: ANALYSIS ONLY");
       expect(
         JSON.stringify(h.harness.inspection.sdk.callsTo("plugins.callRpc")),
       ).toContain("thread_place");
@@ -408,6 +407,156 @@ it("blocks launch when the installed plugin is disabled", async () => {
     expect(data.count).toBe(0);
     expect(data.items[0].ignored).toBe(true);
     expect(h.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+  } finally {
+    await h.harness.lifecycle.dispose();
+  }
+});
+
+it.each(["implement", "reject"] as const)(
+  "continues %s in the same thread only after analysis, with no second spawn",
+  async (decision) => {
+    const h = await setup();
+    let active = false;
+    try {
+      await h.harness.behavior.callRpc("run", { id: first.id });
+      expect((await h.bb.storage.kv.get<any>("item:" + first.id)).status).toBe(
+        "analysis",
+      );
+      await h.harness.behavior.emitThreadEvent("thread.idle", {
+        thread: makeThreadResponse({ id: "thr_safe", status: "idle" }),
+        lastAssistantText: "Русский анализ и English draft",
+      });
+      h.harness.sdk.stub("threads.get", async () =>
+        makeThreadResponse({
+          id: "thr_safe",
+          status: active ? "active" : "idle",
+        }),
+      );
+      h.harness.sdk.stub("threads.send", async (args: any) => {
+        active = true;
+        const { makeMessageDispatchHookContext } =
+          await import("@get-bb/plugin-sdk/testing");
+        await h.harness.registrations.hooks["message.dispatch"]!(
+          makeMessageDispatchHookContext({
+            thread: makeThreadResponse({ id: "thr_safe" }),
+            experimental_submission: {
+              pluginId: "repo-pulse",
+              data: args.pluginSubmission.data,
+            },
+          }),
+        );
+        return {} as any;
+      });
+      expect(
+        ((await h.harness.behavior.callRpc("list", null)) as any).items[0]
+          .status,
+      ).toBe("awaiting_decision");
+      await expect(
+        h.harness.behavior.callRpc("run", { id: first.id }),
+      ).rejects.toThrow("decisionRequired");
+      expect(
+        await h.harness.behavior.callRpc("decide", { id: first.id, decision }),
+      ).toEqual({ threadId: "thr_safe" });
+      expect(h.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+      expect(h.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+      expect(
+        JSON.stringify(h.harness.inspection.sdk.callsTo("threads.send")),
+      ).toContain("OWNER DECISION — STAGE 2");
+      expect(
+        ((await h.harness.behavior.callRpc("list", null)) as any).items[0]
+          .status,
+      ).toBe("implementing");
+      active = false;
+      const result = decision === "reject" ? "rejected" : "done";
+      await h.harness.behavior.emitThreadEvent("thread.idle", {
+        thread: makeThreadResponse({ id: "thr_safe", status: "idle" }),
+        lastAssistantText: `Завершено\nREPO_PULSE_RESULT: ${result}`,
+      });
+      expect(
+        ((await h.harness.behavior.callRpc("list", null)) as any).items[0]
+          .status,
+      ).toBe(result);
+    } finally {
+      await h.harness.lifecycle.dispose();
+    }
+  },
+);
+
+it("recognizes a human reply in the same thread, but not another agent's decision", async () => {
+  const h = await setup();
+  try {
+    await h.harness.behavior.callRpc("run", { id: first.id });
+    await h.harness.behavior.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ id: "thr_safe", status: "idle" }),
+      lastAssistantText: "Analysis",
+    });
+    const { makeMessageDispatchHookContext } =
+      await import("@get-bb/plugin-sdk/testing");
+    const hook = h.harness.registrations.hooks["message.dispatch"]!;
+    await hook(
+      makeMessageDispatchHookContext({
+        thread: makeThreadResponse({ id: "thr_safe" }),
+        initiator: "agent",
+        senderThreadId: "thr_other",
+        input: { text: "внедряй", blocks: [] },
+      }),
+    );
+    expect((await h.bb.storage.kv.get<any>("item:" + first.id)).status).toBe(
+      "awaiting_decision",
+    );
+    await hook(
+      makeMessageDispatchHookContext({
+        thread: makeThreadResponse({ id: "thr_safe" }),
+        initiator: "user",
+        senderThreadId: null,
+        input: { text: "вариант 2", blocks: [] },
+      }),
+    );
+    expect(await h.bb.storage.kv.get<any>("item:" + first.id)).toMatchObject({
+      status: "implementing",
+      decision: "implement",
+    });
+    expect(h.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+  } finally {
+    await h.harness.lifecycle.dispose();
+  }
+});
+
+it("rolls back a failed decision send and does not silently mark an unfinished implementation done", async () => {
+  const h = await setup();
+  try {
+    await h.harness.behavior.callRpc("run", { id: first.id });
+    await h.harness.behavior.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ id: "thr_safe", status: "idle" }),
+      lastAssistantText: "Analysis",
+    });
+    h.harness.sdk.stub("threads.get", async () =>
+      makeThreadResponse({ id: "thr_safe", status: "idle" }),
+    );
+    h.harness.sdk.stub("threads.send", async () => {
+      throw Error("send failed");
+    });
+    await expect(
+      h.harness.behavior.callRpc("decide", {
+        id: first.id,
+        decision: "implement",
+      }),
+    ).rejects.toThrow("send failed");
+    expect((await h.bb.storage.kv.get<any>("item:" + first.id)).status).toBe(
+      "awaiting_decision",
+    );
+    h.harness.sdk.stub("threads.send", async () => ({}) as any);
+    await h.harness.behavior.callRpc("decide", {
+      id: first.id,
+      decision: "implement",
+    });
+    await h.harness.behavior.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ id: "thr_safe", status: "idle" }),
+      lastAssistantText: "Blocked: validation failed",
+    });
+    expect((await h.bb.storage.kv.get<any>("item:" + first.id)).status).toBe(
+      "awaiting_decision",
+    );
   } finally {
     await h.harness.lifecycle.dispose();
   }

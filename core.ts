@@ -33,6 +33,8 @@ export const itemSchema = z.object({
   id: z.string(),
   repo: z.string(),
   sourceRepo: z.string().optional(),
+  manual: z.boolean().optional(),
+  decision: z.enum(["implement", "reject"]).optional(),
   reason: z.enum(["checksFailed", "maintainerLabel"]).optional(),
   bot: z.boolean().optional(),
   ignored: z.boolean().optional(),
@@ -46,6 +48,10 @@ export const itemSchema = z.object({
   status: z.enum([
     "new",
     "running",
+    "analysis",
+    "awaiting_decision",
+    "implementing",
+    "rejected",
     "waiting",
     "done",
     "muted",
@@ -62,41 +68,68 @@ export function mergeItem(previous: Item | undefined, incoming: Item): Item {
   const changed = previous.fingerprint !== incoming.fingerprint;
   return {
     ...incoming,
+    ...(previous.manual ? { manual: true } : {}),
+    ...(previous.decision ? { decision: previous.decision } : {}),
     ...(previous.threadId ? { threadId: previous.threadId } : {}),
     ...(previous.seen ? { seen: previous.seen } : {}),
     status: incoming.closed
-      ? "done"
+      ? previous.decision === "reject"
+        ? "rejected"
+        : "done"
       : previous.status === "muted"
         ? "muted"
-        : previous.status === "running"
-          ? "running"
-          : ["marketplace_waiting", "maintainer_waiting"].includes(
-                incoming.status,
-              )
-            ? incoming.status
-            : changed
-              ? "new"
-              : ["marketplace_waiting", "maintainer_waiting"].includes(
-                    previous.status,
-                  )
-                ? incoming.status
-                : previous.status,
+        : ["running", "analysis", "implementing"].includes(previous.status)
+          ? previous.status
+          : previous.status === "awaiting_decision"
+            ? "awaiting_decision"
+            : ["marketplace_waiting", "maintainer_waiting"].includes(
+                  incoming.status,
+                )
+              ? incoming.status
+              : changed
+                ? "new"
+                : ["marketplace_waiting", "maintainer_waiting"].includes(
+                      previous.status,
+                    )
+                  ? incoming.status
+                  : previous.status,
   };
 }
-export function threadStatus(item: Item, active: boolean): Item {
+export function threadStatus(
+  item: Item,
+  active: boolean,
+  result?: "done" | "rejected",
+): Item {
+  if (
+    [
+      "muted",
+      "done",
+      "rejected",
+      "maintainer_waiting",
+      "marketplace_waiting",
+      "awaiting_decision",
+    ].includes(item.status)
+  )
+    return item.closed
+      ? { ...item, status: item.decision === "reject" ? "rejected" : "done" }
+      : item;
   return {
     ...item,
     status: item.closed
-      ? "done"
-      : item.status === "muted"
-        ? "muted"
-        : active
-          ? "running"
-          : item.kind === "marketplace" && item.reason === "maintainerLabel"
-            ? "maintainer_waiting"
-            : item.kind === "marketplace" && !item.reason
-              ? "marketplace_waiting"
-              : "waiting",
+      ? item.decision === "reject"
+        ? "rejected"
+        : "done"
+      : active
+        ? item.status
+        : item.status === "analysis"
+          ? "awaiting_decision"
+          : item.status === "implementing"
+            ? (result ?? "awaiting_decision")
+            : item.kind === "marketplace" && item.reason === "maintainerLabel"
+              ? "maintainer_waiting"
+              : item.kind === "marketplace" && !item.reason
+                ? "marketplace_waiting"
+                : "waiting",
   };
 }
 export function repoFromRemote(remote: string): string | null {
@@ -353,7 +386,9 @@ export function needsAttention(item: Item) {
     item.reason !== "maintainerLabel" &&
     !item.bot &&
     !isBot(item.author) &&
-    (item.status === "new" || item.status === "waiting")
+    (item.status === "new" ||
+      item.status === "waiting" ||
+      item.status === "awaiting_decision")
   );
 }
 // CI is posted by GitHub Actions but is an actionable repository signal.

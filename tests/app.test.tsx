@@ -5,7 +5,7 @@ import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { configSchema } from "../core";
 import { toast } from "sonner";
 import { ru } from "../messages";
-it("renders Russian BB and blocks bulk dispatch while report-only is selected", async () => {
+it("renders Russian analysis-first BB and blocks bulk dispatch in launch preview", async () => {
   document.documentElement.lang = "en";
   document.documentElement.setAttribute("data-pk-lang", "ru");
   const app = await loadPluginApp(() => import("../app"));
@@ -31,7 +31,9 @@ it("renders Russian BB and blocks bulk dispatch while report-only is selected", 
     const batch = await slot.findByRole("button", { name: ru.batch });
     expect((batch as HTMLButtonElement).disabled).toBe(false);
     expect(slot.getByRole("heading", { name: ru.title })).toBeTruthy();
-    fireEvent.click(slot.getByRole("switch", { name: ru.reportOnly }));
+    expect(slot.queryByRole("switch", { name: ru.reportOnly })).toBeNull();
+    expect(slot.getByText(ru.analysisHint)).toBeTruthy();
+    fireEvent.click(slot.getByRole("switch", { name: ru.dryMode }));
     expect((batch as HTMLButtonElement).disabled).toBe(true);
     expect(
       slot.inspection.rpcCalls.some((call: any) => call.method === "batch"),
@@ -151,6 +153,62 @@ it("keeps calm marketplace/bot/disabled groups out of attention and reveals sect
     fireEvent.click(slot.getByRole("button", { name: ru.bots }));
     expect(slot.getByRole("heading", { name: "VKirill/bots" })).toBeTruthy();
     expect(slot.queryByRole("heading", { name: "VKirill/plugin" })).toBeNull();
+  } finally {
+    slot.lifecycle.unmount();
+    document.documentElement.lang = "en";
+  }
+});
+
+it("offers Implement and Decline on a pending analysis and sends the choice to the existing thread", async () => {
+  document.documentElement.lang = "ru-RU";
+  const app = await loadPluginApp(() => import("../app"));
+  const item = {
+    id: "pending",
+    repo: "owner/plugin",
+    kind: "issue",
+    number: 1,
+    author: "helper",
+    title: "Request",
+    url: "https://github.com/owner/plugin/issues/1",
+    updated: "2026-10-16",
+    fingerprint: "one",
+    closed: false,
+    status: "awaiting_decision",
+    threadId: "thr_existing",
+  };
+  const slot = renderSlot(
+    app.navPanels[0],
+    { subPath: "" },
+    {
+      rpc: {
+        list: () => ({
+          items: [item],
+          count: 1,
+          lastCheck: null,
+          errors: [],
+          authenticated: true,
+          remaining: 10,
+        }),
+        config: () => configSchema.parse({}),
+        routes: () => ({ sections: [], routes: [] }),
+        decide: () => ({ threadId: "thr_existing" }),
+      },
+    },
+  );
+  try {
+    await slot.findByText(ru.awaiting_decision);
+    expect(slot.queryByRole("button", { name: ru.run })).toBeNull();
+    expect(slot.getByRole("button", { name: ru.reject })).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: ru.implement }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(
+      slot.inspection.rpcCalls.some(
+        (c: any) =>
+          c.method === "decide" &&
+          c.input.id === "pending" &&
+          c.input.decision === "implement",
+      ),
+    ).toBe(true);
   } finally {
     slot.lifecycle.unmount();
     document.documentElement.lang = "en";

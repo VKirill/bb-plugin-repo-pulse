@@ -1,4 +1,15 @@
-import { DEFAULT_CONTRACT, LEGACY_CONTRACT } from "./agent-contract";
+import {
+  DEFAULT_CONTRACT,
+  LEGACY_CONTRACT,
+  PREVIOUS_CONTRACT,
+} from "./agent-contract";
+import {
+  activePhase,
+  analysisPrompt,
+  decisionPrompt,
+  ownerDecision,
+  completion,
+} from "./workflow";
 import { failedCheck, gateStep, maintainerGateOnly } from "./checks";
 import { en } from "./messages";
 import { createHash } from "node:crypto";
@@ -25,7 +36,6 @@ import {
   routeSchema,
   resolveRoute,
   normalizedPath,
-  reportPrompt,
   type Section,
 } from "./sections";
 import { hostContract } from "./host";
@@ -33,7 +43,6 @@ const runInput = z.object({
   id: z.string(),
   dryRun: z.boolean().default(false),
   automatic: z.boolean().default(false),
-  reportOnly: z.boolean().default(false),
 });
 const snapshotSchema = z.object({
   items: z.array(itemSchema),
@@ -81,6 +90,21 @@ export const rpcContract = defineRpcContract({
       errors: z.array(z.string()),
     }),
   },
+  track: {
+    input: z.object({
+      repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/),
+      number: z.number().int().positive(),
+    }),
+    output: itemSchema,
+  },
+  decide: {
+    input: z.object({
+      id: z.string(),
+      decision: z.enum(["implement", "reject"]),
+      note: z.string().max(10000).default(""),
+    }),
+    output: z.object({ threadId: z.string() }),
+  },
   mark: {
     input: z.object({
       id: z.string(),
@@ -98,7 +122,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
   let config = configSchema.parse((await bb.storage.kv.get("config")) ?? {});
-  if (config.prompt === LEGACY_CONTRACT) {
+  if ([LEGACY_CONTRACT, PREVIOUS_CONTRACT].includes(config.prompt)) {
     config = { ...config, prompt: DEFAULT_CONTRACT };
     await bb.storage.kv.set("config", config);
   }
@@ -236,7 +260,7 @@ export default async function plugin(bb: BbPluginApi) {
     const ids = [
       ...new Set(
         [...items.values()]
-          .filter((i) => i.status === "running" && i.threadId)
+          .filter((i) => activePhase(i.status) && i.threadId)
           .map((i) => i.threadId!),
       ),
     ];
@@ -245,13 +269,26 @@ export default async function plugin(bb: BbPluginApi) {
         const thread = await bb.sdk.threads.get({ threadId: id });
         if (
           !["active", "starting", "pending", "stopping"].includes(thread.status)
-        )
+        ) {
+          let result: "done" | "rejected" | undefined;
+          if (
+            [...items.values()].some(
+              (i) => i.threadId === id && i.status === "implementing",
+            )
+          ) {
+            try {
+              result = completion(
+                (await bb.sdk.threads.output({ threadId: id })).output,
+              );
+            } catch {}
+          }
           for (const item of items.values())
-            if (item.threadId === id && item.status === "running")
-              await put(threadStatus(item, false));
+            if (item.threadId === id && activePhase(item.status))
+              await put(threadStatus(item, false, result));
+        }
       } catch {
         for (const item of items.values())
-          if (item.threadId === id && item.status === "running")
+          if (item.threadId === id && activePhase(item.status))
             await put(threadStatus(item, false));
       }
     }
@@ -362,12 +399,7 @@ export default async function plugin(bb: BbPluginApi) {
     });
     return bindSection(repo, created.id);
   }
-  async function runUnlocked(
-    id: string,
-    dryRun = false,
-    automatic = false,
-    reportOnly = false,
-  ) {
+  async function runUnlocked(id: string, dryRun = false, automatic = false) {
     const item = items.get(id);
     if (!item) throw Error("itemMissing");
     await loadInstalled();
@@ -378,7 +410,8 @@ export default async function plugin(bb: BbPluginApi) {
     )
       throw Error("maintainer_waiting");
     if (item.repo === "get-bb/marketplace") throw Error("marketplaceUnmapped");
-    if (item.closed || item.status === "done" || item.status === "muted")
+    if (item.status === "awaiting_decision") throw Error("decisionRequired");
+    if (item.closed || ["done", "muted", "rejected"].includes(item.status))
       throw Error("itemResolved");
     await reconcile();
     for (const threadId of new Set(
@@ -392,10 +425,16 @@ export default async function plugin(bb: BbPluginApi) {
     }
     if (
       [...items.values()].some(
-        (i) => i.repo === item.repo && i.status === "running",
+        (i) => i.repo === item.repo && activePhase(i.status),
       )
     )
       throw Error("repoBusy");
+    if (
+      [...items.values()].some(
+        (i) => i.repo === item.repo && i.status === "awaiting_decision",
+      )
+    )
+      throw Error("decisionRequired");
     const route = resolveRoute(item.repo, config, await sections());
     if (route.status !== "ready" || !route.folderId) throw Error(route.status);
     const checked = await host.call(
@@ -409,9 +448,7 @@ export default async function plugin(bb: BbPluginApi) {
         i.repo === item.repo &&
         (i.id === id || (i.status === "new" && actionable(displayItem(i)))),
     );
-    const prompt = reportOnly
-      ? reportPrompt(item.repo, item.url, checkoutPath)
-      : buildPrompt(config, group, checkoutPath, automatic);
+    const prompt = analysisPrompt(config, group, checkoutPath);
     if (dryRun)
       return {
         threadId: null,
@@ -437,7 +474,7 @@ export default async function plugin(bb: BbPluginApi) {
         repo: item.repo,
         itemIds: group.map((i) => i.id),
         automatic,
-        reportOnly,
+        phase: "analysis",
         folderId: route.folderId,
         checkoutPath,
       },
@@ -457,13 +494,16 @@ export default async function plugin(bb: BbPluginApi) {
       await bb.sdk.threads.stop({ threadId: thread.id });
       throw Error("placementFailed");
     }
-    for (const entry of group)
-      await put({
+    for (const entry of group) {
+      const next: Item = {
         ...entry,
-        status: "running",
+        status: "analysis",
         threadId: thread.id,
         seen: entry.fingerprint,
-      });
+      };
+      delete next.decision;
+      await put(next);
+    }
     publish();
     return {
       threadId: thread.id,
@@ -472,6 +512,57 @@ export default async function plugin(bb: BbPluginApi) {
       projectId: route.projectId,
       folderId: route.folderId,
     };
+  }
+  async function decideUnlocked(
+    id: string,
+    decision: "implement" | "reject",
+    note: string,
+  ) {
+    await reconcile();
+    const item = items.get(id);
+    await loadInstalled();
+    if (item && displayItem(item).ignored) throw Error("notWatching");
+    if (!item?.threadId) throw Error("itemMissing");
+    if (item.status !== "awaiting_decision" || item.closed)
+      throw Error("decisionRequired");
+    const thread = await bb.sdk.threads.get({ threadId: item.threadId });
+    if (["active", "starting", "pending", "stopping"].includes(thread.status))
+      throw Error("repoBusy");
+    const route = resolveRoute(item.repo, config, await sections());
+    if (route.status !== "ready") throw Error(route.status);
+    await host.call(
+      "inspect",
+      { path: route.checkoutPath, repo: item.repo },
+      { hostId: route.hostId, signal: lifecycle.signal },
+    );
+    // Persist before send; our dispatch hook recognizes pluginSubmission and never re-enters this queue.
+    await put({ ...item, status: "implementing", decision });
+    try {
+      await bb.sdk.threads.send({
+        threadId: item.threadId,
+        input: [
+          {
+            type: "text",
+            mentions: [],
+            text: decisionPrompt(
+              config,
+              [item],
+              route.checkoutPath,
+              decision,
+              note,
+            ),
+          },
+        ],
+        mode: "start",
+        permissionMode: config.permission,
+        pluginSubmission: { pluginId: "repo-pulse", data: { id, decision } },
+      });
+    } catch (e) {
+      await put(item);
+      throw e;
+    }
+    publish();
+    return { threadId: item.threadId };
   }
   async function batchUnlocked(automatic = false) {
     await loadInstalled();
@@ -686,7 +777,8 @@ export default async function plugin(bb: BbPluginApi) {
           }
           if (
             row.user?.login?.toLowerCase() !== config.owner.toLowerCase() ||
-            marketplace
+            marketplace ||
+            items.get(parent.id)?.manual
           )
             await accept(parent);
           const feedback = async (kind: "comment" | "review", rows: any[]) => {
@@ -739,7 +831,11 @@ export default async function plugin(bb: BbPluginApi) {
         const row = await api.get(`/repos/${repo}/issues/${number}`);
         if (row.state === "closed")
           for (const item of tracked.filter((i) => i.number === number))
-            await put({ ...item, closed: true, status: "done" });
+            await put({
+              ...item,
+              closed: true,
+              status: item.decision === "reject" ? "rejected" : "done",
+            });
       }
       if (!marketplace && activePlugins.has(repo.toLowerCase())) {
         const details = await api.get(`/repos/${repo}`);
@@ -831,6 +927,38 @@ export default async function plugin(bb: BbPluginApi) {
     if (config.automatic) await batchUnlocked(true);
     return snapshot();
   }
+  async function track(repo: string, number: number) {
+    if (
+      !/^[\w.-]+\/[\w.-]+$/.test(repo) ||
+      !Number.isSafeInteger(number) ||
+      number <= 0
+    )
+      throw Error("invalidSettings");
+    if (repo.split("/")[0].toLowerCase() !== config.owner.toLowerCase())
+      throw Error("itemMissing");
+    const budget = (await bb.storage.kv.get<{ used: number; reset: number }>(
+      "anonymous-budget",
+    )) ?? { used: 0, reset: Date.now() + 3600000 };
+    const api = new Github(
+      await token(),
+      { get: async () => undefined, set: async () => {} },
+      fetch,
+      budget,
+      lifecycle.signal,
+    );
+    try {
+      const row = await api.get(`/repos/${repo}/issues/${number}`);
+      const item: Item = {
+        ...githubItem(repo, row.pull_request ? "pr" : "issue", row),
+        manual: true,
+      };
+      await put(mergeItem(items.get(item.id), item));
+      publish();
+      return items.get(item.id)!;
+    } finally {
+      await bb.storage.kv.set("anonymous-budget", budget);
+    }
+  }
   bb.rpc.register(rpcContract, {
     list: () =>
       serial(async () => {
@@ -853,15 +981,16 @@ export default async function plugin(bb: BbPluginApi) {
       serial(() => bindSection(repo, folderId)),
     create_section: ({ repo }) => serial(() => createSection(repo)),
     run: (input) =>
-      serial(() =>
-        runUnlocked(input.id, input.dryRun, input.automatic, input.reportOnly),
-      ),
+      serial(() => runUnlocked(input.id, input.dryRun, input.automatic)),
     batch: () => serial(() => batchUnlocked()),
+    track: ({ repo, number }) => serial(() => track(repo, number)),
+    decide: ({ id, decision, note }) =>
+      serial(() => decideUnlocked(id, decision, note)),
     mark: ({ id, status }) =>
       serial(async () => {
         const item = items.get(id);
         if (!item) throw Error("itemMissing");
-        if (item.status === "running") throw Error("repoBusy");
+        if (activePhase(item.status)) throw Error("repoBusy");
         await put({
           ...item,
           status:
@@ -874,6 +1003,25 @@ export default async function plugin(bb: BbPluginApi) {
         return true;
       }),
   });
+  bb.experimental_hooks.on("message.dispatch", async (context) => {
+    if (context.experimental_submission?.pluginId === "repo-pulse")
+      return { action: "proceed" };
+    if (context.initiator !== "user" || context.senderThreadId !== null)
+      return { action: "proceed" };
+    const decision = ownerDecision(context.input.text);
+    if (!decision) return { action: "proceed" };
+    await serial(async () => {
+      for (const item of items.values())
+        if (
+          item.threadId === context.thread.id &&
+          item.status === "awaiting_decision" &&
+          !item.closed
+        )
+          await put({ ...item, status: "implementing", decision });
+      publish();
+    });
+    return { action: "proceed" };
+  });
   for (const event of [
     "thread.active",
     "thread.idle",
@@ -882,11 +1030,20 @@ export default async function plugin(bb: BbPluginApi) {
     "thread.deleted",
     "interaction.pending",
   ] as const)
-    bb.events.on(event, ({ thread }) =>
+    bb.events.on(event, (payload) =>
       serial(async () => {
+        if (event === "interaction.pending") {
+          publish();
+          return;
+        }
+        const result = completion(
+          "lastAssistantText" in payload
+            ? payload.lastAssistantText
+            : undefined,
+        );
         for (const item of items.values())
-          if (item.threadId === thread.id)
-            await put(threadStatus(item, event === "thread.active"));
+          if (item.threadId === payload.thread.id)
+            await put(threadStatus(item, event === "thread.active", result));
         publish();
       }),
     );
@@ -932,8 +1089,18 @@ export default async function plugin(bb: BbPluginApi) {
         usage: "bb repo-pulse refresh",
       },
       {
+        name: "track",
+        summary: "Explicitly track an owned issue or PR",
+        usage: "bb repo-pulse track <owner/repo> <number>",
+      },
+      {
+        name: "decide",
+        summary: "Continue a linked analysis in the same thread",
+        usage: "bb repo-pulse decide <item-id> <implement|reject> [owner note]",
+      },
+      {
         name: "run",
-        summary: "Launch one agent per repository",
+        summary: "Launch analysis per repository",
         usage: "bb repo-pulse run <item-id> [--dry-run]",
       },
     ],
@@ -947,6 +1114,16 @@ export default async function plugin(bb: BbPluginApi) {
           case "refresh":
             result = await serial(() => refresh());
             break;
+          case "track":
+            result = await serial(() => track(argv[1] ?? "", Number(argv[2])));
+            break;
+          case "decide": {
+            const choice = z.enum(["implement", "reject"]).parse(argv[2]);
+            result = await serial(() =>
+              decideUnlocked(argv[1] ?? "", choice, argv.slice(3).join(" ")),
+            );
+            break;
+          }
           case "run":
             result = await serial(() =>
               runUnlocked(argv[1] ?? "", argv.includes("--dry-run")),

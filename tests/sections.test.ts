@@ -1,10 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  resolveRoute,
-  sectionLabel,
-  reportPrompt,
-  type Section,
-} from "../sections";
+import { resolveRoute, sectionLabel, type Section } from "../sections";
 const parent: Section = {
   id: "parent",
   projectId: "p",
@@ -104,16 +99,9 @@ describe("repository routing", () => {
       "configureCheckout",
     );
   });
-  it("bounds cyclic ancestry and generates a genuinely read-only QA prompt", () => {
+  it("bounds cyclic ancestry", () => {
     expect(sectionLabel({ ...section, parentId: "target" }, [section])).toBe(
       "plugin",
     );
-    expect(
-      reportPrompt(
-        "owner/plugin",
-        "https://github.com/owner/plugin/actions/runs/1",
-        "/plugins/plugin",
-      ),
-    ).toContain("Do not edit any file, create a branch");
   });
 });

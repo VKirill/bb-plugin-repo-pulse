@@ -1,4 +1,14 @@
 export const en = {
+  analysis: "Analysis",
+  awaiting_decision: "Waiting for your decision",
+  implementing: "Implementing",
+  rejected: "Declined",
+  implement: "Implement",
+  reject: "Decline",
+  decisionRequired:
+    "Review the analysis and choose Implement or Decline in its linked thread.",
+  analysisHint:
+    "Agents analyze first. Code and public actions wait for your decision.",
   maintainer_waiting: "Waiting for maintainer label",
   gateEvidenceUnavailable:
     "Could not verify the failed check log; it still needs attention.",
@@ -84,7 +94,7 @@ export const en = {
   reasoning: "Reasoning",
   permission: "Permissions",
   intervalMinutes: "Poll interval (minutes)",
-  automatic: "Automatically prepare reports and local branches",
+  automatic: "Automatically analyze new items",
   marketplace: "Watch marketplace submissions",
   prompt: "Agent contract template",
   preview: "Preview agent prompt",
@@ -119,6 +129,16 @@ export const en = {
     "Choose a BB project, machine and scan folder before launching agents.",
 };
 export const ru: Record<keyof typeof en, string> = {
+  analysis: "Анализ",
+  awaiting_decision: "Ждёт вашего решения",
+  implementing: "Внедряется",
+  rejected: "Отклонено",
+  implement: "Внедрить",
+  reject: "Отклонить",
+  decisionRequired:
+    "Прочитайте анализ и выберите «Внедрить» или «Отклонить» в связанном треде.",
+  analysisHint:
+    "Сначала агент анализирует. Изменения и публичные действия — после вашего решения.",
   maintainer_waiting: "Ждёт метку сопровождающего",
   gateEvidenceUnavailable:
     "Не удалось проверить лог ошибки; пункт по-прежнему требует внимания.",
@@ -180,7 +200,7 @@ export const ru: Record<keyof typeof en, string> = {
   running: "Агент работает",
   waiting: "Ждёт вас",
   muted: "Заглушено",
-  resolved: "Решено",
+  resolved: "Готово",
   all: "Все",
   active: "Требуют внимания",
   empty:
@@ -203,7 +223,7 @@ export const ru: Record<keyof typeof en, string> = {
   reasoning: "Глубина рассуждения",
   permission: "Разрешения",
   intervalMinutes: "Интервал опроса (минуты)",
-  automatic: "Автоматически готовить отчёты и локальные ветки",
+  automatic: "Автоматически анализировать новые пункты",
   marketplace: "Следить за заявками маркетплейса",
   prompt: "Шаблон контракта агента",
   preview: "Предпросмотр промпта",

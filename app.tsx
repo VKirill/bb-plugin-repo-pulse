@@ -9,6 +9,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
+import { activePhase } from "./workflow";
 import { actionable, isBot, type Config, type Item } from "./core";
 import { useRoutes, RepositorySection } from "./repository-sections";
 import { mountChromeLocalization, detectLocale } from "./i18n";
@@ -243,7 +244,6 @@ function Page() {
   const t = useStrings();
   const navigate = useBbNavigate();
   const routeData = useRoutes();
-  const [reportOnly, setReportOnly] = useState(false);
   useEffect(() => {
     rpc.call("config").then(setConfig, (e) => setError(errorText(e, t)));
   }, [rpc, t, setError]);
@@ -264,7 +264,7 @@ function Page() {
       filter === "all" ||
       (filter === "bots"
         ? i.kind !== "ci" && (i.bot || isBot(i.author))
-        : actionable(i)),
+        : actionable(i) || (!i.ignored && !i.closed && activePhase(i.status))),
   );
   const repos = [...new Set(visible.map((i) => i.repo))];
   return (
@@ -282,7 +282,7 @@ function Page() {
           <div className="rp-actions ml-auto">
             <Button
               className="rp-accent"
-              disabled={busy || dry || reportOnly}
+              disabled={busy || dry}
               onClick={() =>
                 void action(async () => {
                   const result = await rpc.call("batch");
@@ -372,15 +372,8 @@ function Page() {
             <Switch id="rp-dry" checked={dry} onCheckedChange={setDry} />
             <Label htmlFor="rp-dry">{t.dryMode}</Label>
           </div>
-          <div className="flex items-center gap-2">
-            <Switch
-              id="rp-report"
-              checked={reportOnly}
-              onCheckedChange={setReportOnly}
-            />
-            <Label htmlFor="rp-report">{t.reportOnly}</Label>
-          </div>
         </div>
+        <p className="text-xs text-muted-foreground">{t.analysisHint}</p>
         {data === null ? (
           <Skeleton className="h-32 w-full" />
         ) : repos.length === 0 ? (
@@ -410,7 +403,7 @@ function Page() {
                                 {t[kindKeys[item.kind]]}
                               </span>
                               <span
-                                className={`rp-pill ${["marketplace_waiting", "maintainer_waiting"].includes(item.status) || item.ignored ? "rp-pill-neutral" : item.status === "done" ? "rp-pill-success" : item.status === "running" ? "rp-pill-info" : "rp-pill-warning"}`}
+                                className={`rp-pill ${["marketplace_waiting", "maintainer_waiting"].includes(item.status) || item.ignored ? "rp-pill-neutral" : item.status === "done" ? "rp-pill-success" : activePhase(item.status) ? "rp-pill-info" : "rp-pill-warning"}`}
                               >
                                 {item.reason === "checksFailed" &&
                                 ["new", "waiting"].includes(item.status)
@@ -439,40 +432,78 @@ function Page() {
                           </TableCell>
                           <TableCell>
                             <div className="rp-actions">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={
-                                  busy ||
-                                  item.ignored ||
-                                  item.reason === "maintainerLabel" ||
-                                  routeData.routes.find((r) => r.repo === repo)
-                                    ?.status !== "ready" ||
-                                  [
-                                    "running",
-                                    "done",
-                                    "muted",
-                                    "maintainer_waiting",
-                                  ].includes(item.status)
-                                }
-                                onClick={() =>
-                                  void action(async () => {
-                                    const result = await rpc.call("run", {
-                                      id: item.id,
-                                      dryRun: dry,
-                                      automatic: false,
-                                      reportOnly,
-                                    });
-                                    if (dry) {
-                                      setPreview(result.prompt);
-                                      toast.success(t.previewReady);
-                                    } else if (result.threadId)
-                                      navigate.toThread(result.threadId);
-                                  })
-                                }
-                              >
-                                {t.run}
-                              </Button>
+                              {item.status === "awaiting_decision" &&
+                              item.threadId ? (
+                                <>
+                                  {(["implement", "reject"] as const).map(
+                                    (decision) => (
+                                      <Button
+                                        key={decision}
+                                        size="sm"
+                                        variant={
+                                          decision === "implement"
+                                            ? "outline"
+                                            : "ghost"
+                                        }
+                                        disabled={busy || item.ignored}
+                                        onClick={() =>
+                                          void action(async () => {
+                                            const result = await rpc.call(
+                                              "decide",
+                                              {
+                                                id: item.id,
+                                                decision,
+                                                note: "",
+                                              },
+                                            );
+                                            navigate.toThread(result.threadId);
+                                          })
+                                        }
+                                      >
+                                        {t[decision]}
+                                      </Button>
+                                    ),
+                                  )}
+                                </>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={
+                                    busy ||
+                                    item.ignored ||
+                                    item.reason === "maintainerLabel" ||
+                                    routeData.routes.find(
+                                      (r) => r.repo === repo,
+                                    )?.status !== "ready" ||
+                                    [
+                                      "running",
+                                      "analysis",
+                                      "implementing",
+                                      "rejected",
+                                      "done",
+                                      "muted",
+                                      "maintainer_waiting",
+                                    ].includes(item.status)
+                                  }
+                                  onClick={() =>
+                                    void action(async () => {
+                                      const result = await rpc.call("run", {
+                                        id: item.id,
+                                        dryRun: dry,
+                                        automatic: false,
+                                      });
+                                      if (dry) {
+                                        setPreview(result.prompt);
+                                        toast.success(t.previewReady);
+                                      } else if (result.threadId)
+                                        navigate.toThread(result.threadId);
+                                    })
+                                  }
+                                >
+                                  {t.run}
+                                </Button>
+                              )}
                               {item.threadId && (
                                 <Button
                                   size="sm"
@@ -487,7 +518,7 @@ function Page() {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                disabled={busy || item.status === "running"}
+                                disabled={busy || activePhase(item.status)}
                                 onClick={() =>
                                   void action(() =>
                                     rpc.call("mark", {
@@ -503,7 +534,7 @@ function Page() {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                disabled={busy || item.status === "running"}
+                                disabled={busy || activePhase(item.status)}
                                 onClick={() =>
                                   void action(() =>
                                     rpc.call("mark", {
