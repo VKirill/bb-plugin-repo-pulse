@@ -13,10 +13,47 @@ const first = githubItem("owner/repo", "issue", {
   html_url: "https://github.com/owner/repo/issues/1",
   updated_at: "2026-10-16",
 });
-async function setup() {
+export async function setup() {
   let h = createFakePluginHost({
     pluginId: "repo-pulse",
+    experimental_callHostRpc: async (call: any) => ({ path: call.input.path }),
     sdk: {
+      plugins: {
+        callRpc: async (args: any) =>
+          args.method === "sections_list"
+            ? {
+                sections: [
+                  {
+                    id: "parent",
+                    projectId: "project",
+                    hostId: "host",
+                    name: "Plugins",
+                    parentId: null,
+                    path: "/work",
+                    kind: "folder",
+                  },
+                  {
+                    id: "folder",
+                    projectId: "project",
+                    hostId: "host",
+                    name: "repo",
+                    parentId: "parent",
+                    path: "/work/repo",
+                    kind: "folder",
+                  },
+                  {
+                    id: "other",
+                    projectId: "project",
+                    hostId: "host",
+                    name: "Other",
+                    parentId: null,
+                    path: "/work/other",
+                    kind: "folder",
+                  },
+                ],
+              }
+            : { ok: true },
+      },
       threads: {
         spawn: async () => ({ id: "thr_safe" }) as any,
         get: async () =>
@@ -192,6 +229,68 @@ describe("poller disposal", () => {
       expect(h.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
     } finally {
       globalThis.fetch = original;
+      await h.harness.lifecycle.dispose();
+    }
+  });
+});
+
+describe("section-aware dispatch", () => {
+  it("spawns at the checkout and files into the exact folder", async () => {
+    const h = await setup();
+    try {
+      const result = (await h.harness.behavior.callRpc("run", {
+        id: first.id,
+        reportOnly: true,
+      })) as any;
+      expect(result.folderId).toBe("folder");
+      const spawn = h.harness.inspection.sdk.callsTo("threads.spawn")[0] as any;
+      expect(JSON.stringify(spawn)).toContain("/work/repo");
+      expect(JSON.stringify(spawn)).toContain("READ-ONLY REPORT MODE");
+      expect(
+        JSON.stringify(h.harness.inspection.sdk.callsTo("plugins.callRpc")),
+      ).toContain("thread_place");
+    } finally {
+      await h.harness.lifecycle.dispose();
+    }
+  });
+  it("refuses launch before spawn when sections are absent", async () => {
+    const h = await setup();
+    try {
+      h.harness.sdk.stub("plugins.callRpc", async () => ({ sections: [] }));
+      await expect(
+        h.harness.behavior.callRpc("run", { id: first.id }),
+      ).rejects.toThrow("sectionMissing");
+      expect(h.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+    } finally {
+      await h.harness.lifecycle.dispose();
+    }
+  });
+  it("stops a spawned agent if placement fails", async () => {
+    const h = await setup();
+    try {
+      const original = h.bb.sdk.plugins.callRpc;
+      h.harness.sdk.stub("threads.stop", async () => ({}) as any);
+      h.harness.sdk.stub("plugins.callRpc", async (args: any) => {
+        if (args.method === "thread_place") throw Error("failed");
+        return {
+          sections: [
+            {
+              id: "folder",
+              projectId: "project",
+              hostId: "host",
+              name: "repo",
+              parentId: null,
+              path: "/work/repo",
+              kind: "folder",
+            },
+          ],
+        };
+      });
+      await expect(
+        h.harness.behavior.callRpc("run", { id: first.id }),
+      ).rejects.toThrow("placementFailed");
+      expect(h.harness.inspection.sdk.callsTo("threads.stop")).toHaveLength(1);
+    } finally {
       await h.harness.lifecycle.dispose();
     }
   });

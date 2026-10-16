@@ -1,172 +1,157 @@
 import { useEffect, useState } from "react";
-export const en = {
-  title: "Repo Pulse",
-  attention: "Need attention",
-  refresh: "Check now",
-  batch: "Process all new",
-  settings: "Settings",
-  save: "Save settings",
-  scan: "Scan checkouts",
-  open: "Open on GitHub",
-  run: "Run agent",
-  thread: "Open thread",
-  done: "Mark resolved",
-  mute: "Mute",
-  restore: "Mark new",
-  new: "New",
-  running: "Agent running",
-  waiting: "Waiting for you",
-  muted: "Muted",
-  resolved: "Done",
-  all: "All",
-  active: "Needs attention",
-  empty:
-    "No items need attention. Check GitHub or change the repository list in settings.",
-  loading: "Loading…",
-  auth: "Authenticated GitHub polling",
-  anonymous:
-    "Anonymous GitHub access: 60 requests/hour; this plugin reserves a budget of 45. Configure GH_TOKEN in Env Catalog or a secret plugin setting.",
-  last: "Last checked",
-  errors: "Polling errors",
-  owner: "GitHub owner",
-  repositories:
-    "Repositories (one owner/repo per line; empty = discover bb-plugin-* and claude-lane-stack)",
-  projectId: "BB project ID",
-  hostId: "Machine ID",
-  scanRoot: "Folder to scan",
-  checkouts: "Repository → checkout map (JSON)",
-  provider: "Provider",
-  model: "Model",
-  reasoning: "Reasoning",
-  permission: "Permissions",
-  intervalMinutes: "Poll interval (minutes)",
-  automatic: "Automatically prepare reports and local branches",
-  marketplace: "Watch marketplace submissions",
-  prompt: "Agent contract template",
-  preview: "Preview agent prompt",
-  previewReady: "Launch validated; no thread or writer was started.",
-  saved: "Settings saved",
-  scanned: "Checkouts scanned",
-  notification: "New GitHub items",
-  error: "Action failed",
-  configureHost: "Choose a machine and a scan folder in settings.",
-  configureCheckout: "Set a project, machine and checkout path in settings.",
-  itemMissing: "This item no longer exists.",
-  itemResolved: "This item is already resolved or muted.",
-  repoBusy: "An agent is already working on this repository.",
-  anonymousLimit:
-    "Anonymous request budget exhausted; retry after the hourly reset.",
-  rateLimit: "GitHub rate limit exhausted.",
-  launchFailed: "Agent launch failed.",
-  pollFailed: "GitHub polling failed.",
-  paginationLimit: "GitHub pagination limit reached; list is incomplete.",
-  kindIssue: "Issue",
-  kindPr: "Pull request",
-  kindComment: "Comment",
-  kindReview: "Review",
-  kindCi: "CI failure",
-  kindMarketplace: "Marketplace",
-  remaining: "API requests remaining",
-  showMore: "Open GitHub to see the full discussion",
-  tokenHint:
-    "GitHub token: set GH_TOKEN in Env Catalog, or use the secret field on this plugin’s BB settings page.",
-  dryMode: "Preview launches (no agent starts)",
-  unconfigured:
-    "Choose a BB project, machine and scan folder before launching agents.",
-};
-export const ru: Record<keyof typeof en, string> = {
-  title: "Пульс плагинов",
-  attention: "Требуют внимания",
-  refresh: "Проверить сейчас",
-  batch: "Разобрать всё новое",
-  settings: "Настройки",
-  save: "Сохранить настройки",
-  scan: "Найти checkout",
-  open: "Открыть на GitHub",
-  run: "Запустить агента",
-  thread: "Открыть тред",
-  done: "Отметить решённым",
-  mute: "Заглушить",
-  restore: "Отметить новым",
-  new: "Новое",
-  running: "Агент работает",
-  waiting: "Ждёт вас",
-  muted: "Заглушено",
-  resolved: "Решено",
-  all: "Все",
-  active: "Требуют внимания",
-  empty:
-    "Нет пунктов, требующих внимания. Проверьте GitHub или измените список репозиториев в настройках.",
-  loading: "Загрузка…",
-  auth: "GitHub: авторизованный опрос",
-  anonymous:
-    "GitHub без токена: 60 запросов в час; плагин оставляет себе бюджет 45. Добавьте GH_TOKEN в Env Catalog или секретную настройку плагина.",
-  last: "Последняя проверка",
-  errors: "Ошибки опроса",
-  owner: "Владелец GitHub",
-  repositories:
-    "Репозитории (owner/repo по одному в строке; пусто = найти bb-plugin-* и claude-lane-stack)",
-  projectId: "ID проекта BB",
-  hostId: "ID машины",
-  scanRoot: "Папка для поиска",
-  checkouts: "Репозиторий → путь checkout (JSON)",
-  provider: "Провайдер",
-  model: "Модель",
-  reasoning: "Глубина рассуждения",
-  permission: "Разрешения",
-  intervalMinutes: "Интервал опроса (минуты)",
-  automatic: "Автоматически готовить отчёты и локальные ветки",
-  marketplace: "Следить за заявками маркетплейса",
-  prompt: "Шаблон контракта агента",
-  preview: "Предпросмотр промпта",
-  previewReady: "Запуск проверен; тред и агент не запускались.",
-  saved: "Настройки сохранены",
-  scanned: "Checkout найдены",
-  notification: "Новые пункты GitHub",
-  error: "Действие не выполнено",
-  configureHost: "Укажите машину и папку поиска в настройках.",
-  configureCheckout: "Укажите проект, машину и путь checkout в настройках.",
-  itemMissing: "Пункт больше не существует.",
-  itemResolved: "Пункт уже решён или заглушён.",
-  repoBusy: "В этом репозитории уже работает агент.",
-  anonymousLimit: "Часовой бюджет анонимных запросов исчерпан.",
-  rateLimit: "Лимит запросов GitHub исчерпан.",
-  launchFailed: "Не удалось запустить агента.",
-  pollFailed: "Ошибка опроса GitHub.",
-  paginationLimit: "Достигнут предел страниц GitHub; список неполон.",
-  kindIssue: "Issue",
-  kindPr: "PR",
-  kindComment: "Комментарий",
-  kindReview: "Ревью",
-  kindCi: "Ошибка CI",
-  kindMarketplace: "Маркетплейс",
-  remaining: "Осталось запросов API",
-  showMore: "Полное обсуждение доступно на GitHub",
-  tokenHint:
-    "Токен GitHub: GH_TOKEN в Env Catalog или секретное поле на странице настроек плагина в BB.",
-  dryMode: "Проверять запуск без старта агента",
-  unconfigured:
-    "Перед запуском агентов выберите проект BB, машину и папку поиска.",
-};
+import { en, ru } from "./messages";
+export { en, ru } from "./messages";
+export type Locale = "en" | "ru";
+export function resolveLocale(input: {
+  lang?: string;
+  pk?: string | null;
+  preference?: string | null;
+  russifier?: string | null;
+  labels?: string[];
+}): Locale {
+  if (input.lang?.toLowerCase().startsWith("ru")) return "ru";
+  if (input.preference === "ru" || input.preference === "en")
+    return input.preference;
+  if (input.russifier === "off") return "en";
+  if (input.pk === "ru") return "ru";
+  return input.labels?.some((label) =>
+    /^(Назад|Вперёд|Переключить боковую панель|Показать правую панель|Новый тред)/.test(
+      label,
+    ),
+  )
+    ? "ru"
+    : "en";
+}
+export function detectLocale(): Locale {
+  if (typeof document === "undefined") return "en";
+  let preference: string | null = null,
+    russifier: string | null = null;
+  try {
+    preference = localStorage.getItem("pokecut-theme:locale");
+    russifier = localStorage.getItem("bb-plugin-ru:enabled");
+  } catch {}
+  return resolveLocale({
+    lang: document.documentElement.lang,
+    pk: document.documentElement.getAttribute("data-pk-lang"),
+    preference,
+    russifier,
+    labels: [
+      ...document.querySelectorAll(
+        '[data-sidebar="sidebar"] button[aria-label],header button[aria-label]',
+      ),
+    ]
+      .slice(0, 30)
+      .map((x) => x.getAttribute("aria-label") ?? ""),
+  });
+}
 export function strings() {
-  return document.documentElement.lang.toLowerCase().startsWith("ru") ? ru : en;
+  return detectLocale() === "ru" ? ru : en;
+}
+export function observeLocale(listener: () => void): () => void {
+  const observer = new MutationObserver(listener);
+  observer.observe(document.documentElement, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ["lang", "data-pk-lang", "aria-label"],
+  });
+  window.addEventListener("storage", listener);
+  window.addEventListener("pokecut-theme:locale", listener);
+  return () => {
+    observer.disconnect();
+    window.removeEventListener("storage", listener);
+    window.removeEventListener("pokecut-theme:locale", listener);
+  };
 }
 export function useStrings() {
   const [value, setValue] = useState(strings);
   useEffect(() => {
-    const observer = new MutationObserver(() => setValue(strings()));
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["lang"],
-    });
-    return () => observer.disconnect();
+    const sync = () => setValue(strings());
+    const dispose = observeLocale(sync);
+    sync();
+    return dispose;
   }, []);
   return value;
 }
-export function errorText(error: unknown, t: typeof en) {
+export function errorText(error: unknown, t: typeof en): string {
   const raw = error instanceof Error ? error.message : String(error);
+  if (raw.includes("\n"))
+    return raw
+      .split("\n")
+      .map((line) => errorText(new Error(line), t))
+      .join("\n");
   const key = Object.keys(en).find((k) => raw === k || raw.endsWith(": " + k));
-  return key
-    ? t[key as keyof typeof en]
-    : `${t.error}: ${raw.replace(/GitHub HTTP/g, "GitHub HTTP")}`;
+  if (key) {
+    const prefix = raw === key ? "" : raw.slice(0, -key.length);
+    return prefix + t[key as keyof typeof en];
+  }
+  const http = raw.match(/GitHub HTTP (\d+)/);
+  if (http) return `${t.githubError} (${http[1]})`;
+  if (error instanceof SyntaxError || /validation|JSON|Zod/i.test(raw))
+    return t.invalidSettings;
+  if (/fetch|network|timeout|abort/i.test(raw)) return t.networkError;
+  return t.error;
+}
+/** SDK metadata is plain text. Localize only our own host-owned labels, never other plugins or GitHub content. */
+export function mountChromeLocalization() {
+  const pairs = ([en.title, en.description, en.token] as string[]).map(
+    (text, i) => [text, [ru.title, ru.description, ru.token][i]],
+  );
+  let scheduled = false,
+    disposed = false;
+  function sync() {
+    if (disposed || scheduled) return;
+    scheduled = true;
+    queueMicrotask(() => {
+      scheduled = false;
+      if (disposed) return;
+      const t = strings();
+      const translate = (text: string) => {
+        for (const [english, russian] of pairs)
+          if (text === english || text === russian)
+            return t === ru ? russian : english;
+        return text;
+      };
+      const walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT,
+      );
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        if (
+          node.parentElement?.closest(
+            "[data-rp-content],script,style,textarea,pre",
+          )
+        )
+          continue;
+        const value = node.nodeValue ?? "";
+        const next = translate(value.trim());
+        if (next !== value.trim())
+          node.nodeValue = value.replace(value.trim(), next);
+      }
+      for (const el of document.querySelectorAll("[aria-label],[title]"))
+        for (const attr of ["aria-label", "title"]) {
+          const value = el.getAttribute(attr);
+          if (value) {
+            const next = translate(value);
+            if (next !== value) el.setAttribute(attr, next);
+          }
+        }
+    });
+  }
+  const observer = new MutationObserver(sync);
+  observer.observe(document.body, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: ["aria-label", "title"],
+  });
+  const unsub = observeLocale(sync);
+  sync();
+  return () => {
+    disposed = true;
+    observer.disconnect();
+    unsub();
+  };
 }

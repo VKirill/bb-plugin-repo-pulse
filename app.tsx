@@ -10,6 +10,8 @@ import {
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import type { Config, Item } from "./core";
+import { useRoutes, RepositorySection } from "./repository-sections";
+import { mountChromeLocalization, detectLocale } from "./i18n";
 import { useStrings, strings, errorText, type en } from "./i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -94,14 +96,17 @@ function Settings({
   const [busy, setBusy] = useState(false);
   const rpc = useRpc<typeof rpcContract>();
   const context = useBbContext();
+  const routeData = useRoutes();
   const t = useStrings();
   const change = (key: keyof Config, value: unknown) =>
     setConfig((current) => ({ ...current, [key]: value }));
   async function save(scan = false) {
     setBusy(true);
     try {
+      const latest = await rpc.call("config");
       let value = await rpc.call("save_config", {
         ...config,
+        bindings: latest.bindings,
         projectId: config.projectId || context.projectId || "",
         repositories: repos.split(/\s+/).filter(Boolean),
         checkouts: JSON.parse(mapping),
@@ -130,6 +135,7 @@ function Settings({
             "projectId",
             "hostId",
             "scanRoot",
+            "parentFolderId",
             "provider",
             "model",
             "reasoning",
@@ -192,6 +198,19 @@ function Settings({
           />
         </div>
         <p className="text-xs text-muted-foreground">{t.tokenHint}</p>
+        <h3 className="text-sm font-medium">{t.routes}</h3>
+        {routeData.error && (
+          <p role="alert">{errorText(new Error(routeData.error), t)}</p>
+        )}
+        {routeData.routes.map((route) => (
+          <RepositorySection
+            key={route.repo}
+            repo={route.repo}
+            route={route}
+            sections={routeData.sections}
+            reload={routeData.reload}
+          />
+        ))}
         <div className="rp-actions">
           <Button disabled={busy} onClick={() => void save()}>
             {t.save}
@@ -218,6 +237,8 @@ function Page() {
     [preview, setPreview] = useState("");
   const t = useStrings();
   const navigate = useBbNavigate();
+  const routeData = useRoutes();
+  const [reportOnly, setReportOnly] = useState(false);
   useEffect(() => {
     rpc.call("config").then(setConfig, (e) => setError(errorText(e, t)));
   }, [rpc, t, setError]);
@@ -242,7 +263,11 @@ function Page() {
   );
   const repos = [...new Set(visible.map((i) => i.repo))];
   return (
-    <div className="h-full min-h-0 overflow-y-auto">
+    <div
+      data-rp-content
+      translate="no"
+      className="h-full min-h-0 overflow-y-auto"
+    >
       <div className="mx-auto w-full max-w-5xl p-4 space-y-5">
         <div className="rp-strip flex flex-wrap items-center gap-3">
           <h1 className="text-xl font-medium">{t.title}</h1>
@@ -279,7 +304,7 @@ function Page() {
         <p className="text-xs text-muted-foreground">
           {data?.authenticated ? t.auth : t.anonymous}
           {data?.lastCheck
-            ? ` · ${t.last}: ${new Date(data.lastCheck).toLocaleString()}`
+            ? ` · ${t.last}: ${new Date(data.lastCheck).toLocaleString(t === strings() && detectLocale() === "ru" ? "ru-RU" : "en-US")}`
             : ""}
           {data?.remaining != null
             ? ` · ${t.remaining}: ${data.remaining}`
@@ -287,6 +312,11 @@ function Page() {
         </p>
         {config && (!config.hostId || !config.projectId) && (
           <p className="rp-pill rp-pill-warning">{t.unconfigured}</p>
+        )}
+        {routeData.error && (
+          <p role="alert" className="rp-pill rp-pill-warning">
+            {errorText(new Error(routeData.error), t)}
+          </p>
         )}
         {error && (
           <p
@@ -327,6 +357,12 @@ function Page() {
           </div>
           <Switch id="rp-dry" checked={dry} onCheckedChange={setDry} />
           <Label htmlFor="rp-dry">{t.dryMode}</Label>
+          <Switch
+            id="rp-report"
+            checked={reportOnly}
+            onCheckedChange={setReportOnly}
+          />
+          <Label htmlFor="rp-report">{t.reportOnly}</Label>
         </div>
         {data === null ? (
           <Skeleton className="h-32 w-full" />
@@ -338,6 +374,12 @@ function Page() {
               <h2 className="rp-panel-head text-sm font-medium rp-title">
                 {repo}
               </h2>
+              <RepositorySection
+                repo={repo}
+                route={routeData.routes.find((r) => r.repo === repo)}
+                sections={routeData.sections}
+                reload={routeData.reload}
+              />
               <div className="rp-panel-body overflow-x-auto">
                 <Table>
                   <TableHeader>
@@ -365,7 +407,9 @@ function Page() {
                             <p className="rp-title font-medium">{item.title}</p>
                             <p className="text-xs text-muted-foreground">
                               @{item.author} · #{item.number} ·{" "}
-                              {new Date(item.updated).toLocaleString()}
+                              {new Date(item.updated).toLocaleString(
+                                detectLocale() === "ru" ? "ru-RU" : "en-US",
+                              )}
                             </p>
                             <UrlLink
                               href={item.url}
@@ -381,6 +425,8 @@ function Page() {
                                 variant="outline"
                                 disabled={
                                   busy ||
+                                  routeData.routes.find((r) => r.repo === repo)
+                                    ?.status !== "ready" ||
                                   ["running", "done", "muted"].includes(
                                     item.status,
                                   )
@@ -391,6 +437,7 @@ function Page() {
                                       id: item.id,
                                       dryRun: dry,
                                       automatic: false,
+                                      reportOnly,
                                     });
                                     if (dry) {
                                       setPreview(result.prompt);
@@ -473,6 +520,7 @@ function Page() {
   );
 }
 export default definePluginApp((app) => {
+  app.contentScripts.register({ id: "locale", mount: mountChromeLocalization });
   app.slots.navPanel({
     id: "pulse",
     title: strings().title,

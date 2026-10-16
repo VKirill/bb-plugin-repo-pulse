@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 — 2026-10-16
+
+- Follow BB’s Russian interface when the Russifier leaves html lang as English; localize the entire page, header, settings, notifications and own plugin labels. Add dictionary coverage and JSX checks.
+- Match each repository to its Projects & Sections folder; show and edit section bindings, create missing sections, validate checkout roots and GitHub origins, and file each spawned thread into the selected section.
+- Add read-only report launches and stop the agent if section placement fails.
+- Distribute from public GitHub semver tags for managed hub updates.
+
 ## 0.1.1 — 2026-10-16
 
 - Abort in-flight GitHub polling when the background service stops; an interrupted poll never starts automatic agents.

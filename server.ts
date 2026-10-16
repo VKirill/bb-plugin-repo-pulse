@@ -1,3 +1,4 @@
+import { en } from "./messages";
 import { createHash } from "node:crypto";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -13,11 +14,20 @@ import {
   type Item,
   type CacheEntry,
 } from "./core";
+import {
+  sectionSchema,
+  routeSchema,
+  resolveRoute,
+  normalizedPath,
+  reportPrompt,
+  type Section,
+} from "./sections";
 import { hostContract } from "./host";
 const runInput = z.object({
   id: z.string(),
   dryRun: z.boolean().default(false),
   automatic: z.boolean().default(false),
+  reportOnly: z.boolean().default(false),
 });
 const snapshotSchema = z.object({
   items: z.array(itemSchema),
@@ -33,12 +43,29 @@ export const rpcContract = defineRpcContract({
   config: { input: z.null(), output: configSchema },
   save_config: { input: configSchema, output: configSchema },
   scan: { input: z.null(), output: z.record(z.string(), z.string()) },
+  routes: {
+    input: z.null(),
+    output: z.object({
+      sections: z.array(sectionSchema),
+      routes: z.array(routeSchema),
+    }),
+  },
+  bind_section: {
+    input: z.object({ repo: z.string(), folderId: z.string().nullable() }),
+    output: routeSchema,
+  },
+  create_section: {
+    input: z.object({ repo: z.string() }),
+    output: routeSchema,
+  },
   run: {
     input: runInput,
     output: z.object({
       threadId: z.string().nullable(),
       prompt: z.string(),
       checkoutPath: z.string(),
+      projectId: z.string(),
+      folderId: z.string(),
     }),
   },
   batch: {
@@ -60,7 +87,7 @@ export default async function plugin(bb: BbPluginApi) {
   const secrets = bb.settings.define({
     githubToken: {
       type: "string",
-      label: "GitHub token / Токен GitHub",
+      label: en.token,
       secret: true,
     },
   });
@@ -89,7 +116,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
   let queue: Promise<unknown> = Promise.resolve();
   function serial<T>(fn: () => Promise<T>): Promise<T> {
-    const next = queue.then(fn);
+    const next = queue.then(() => fn());
     queue = next.catch(() => {});
     return next;
   }
@@ -159,7 +186,107 @@ export default async function plugin(bb: BbPluginApi) {
     await bb.storage.kv.set("config", config);
     return config.checkouts;
   }
-  async function runUnlocked(id: string, dryRun = false, automatic = false) {
+  async function sections(): Promise<Section[]> {
+    try {
+      return (
+        await bb.sdk.plugins.callRpc({
+          pluginId: "project-folders",
+          method: "sections_list",
+          input: {},
+          outputSchema: z.object({ sections: z.array(sectionSchema) }),
+        })
+      ).sections;
+    } catch {
+      throw Error("foldersUnavailable");
+    }
+  }
+  async function routes() {
+    const rows = await sections();
+    const repos = [
+      ...new Set([
+        ...Object.keys(config.checkouts),
+        ...Object.keys(config.bindings),
+        ...[...items.values()].map((i) => i.repo),
+        ...config.repositories,
+      ]),
+    ];
+    return {
+      sections: rows,
+      routes: repos.map((repo) => resolveRoute(repo, config, rows)),
+    };
+  }
+  async function bindSection(repo: string, folderId: string | null) {
+    const rows = await sections();
+    const bindings = { ...config.bindings };
+    if (folderId) {
+      const section = rows.find(
+        (s) => s.id === folderId && s.kind === "folder",
+      );
+      if (!section) throw Error("sectionMissing");
+      const current = resolveRoute(repo, config, rows);
+      if (section.hostId !== current.hostId) throw Error("bindingInvalid");
+      if (!current.checkoutPath) throw Error("configureCheckout");
+      bindings[repo] = {
+        projectId: section.projectId,
+        folderId: section.id,
+        hostId: section.hostId,
+        checkoutPath: current.checkoutPath,
+      };
+    } else delete bindings[repo];
+    config = { ...config, bindings };
+    await bb.storage.kv.set("config", config);
+    publish();
+    return resolveRoute(repo, config, rows);
+  }
+  async function createSection(repo: string) {
+    const rows = await sections();
+    const route = resolveRoute(repo, config, rows);
+    if (route.status === "ready") return route;
+    if (!route.checkoutPath || !route.hostId || !route.projectId)
+      throw Error("configureCheckout");
+    const checked = await host.call(
+      "inspect",
+      { path: route.checkoutPath, repo },
+      { hostId: route.hostId, signal: lifecycle.signal },
+    );
+    const parent =
+      rows.find(
+        (s) =>
+          s.id === config.parentFolderId &&
+          s.hostId === route.hostId &&
+          s.projectId === route.projectId,
+      ) ??
+      rows.find(
+        (s) =>
+          s.projectId === route.projectId &&
+          s.hostId === route.hostId &&
+          normalizedPath(s.path) === normalizedPath(config.scanRoot),
+      );
+    if (!parent) throw Error("parentMissing");
+    const created = await bb.sdk.plugins.callRpc({
+      pluginId: "project-folders",
+      method: "create",
+      input: {
+        projectId: route.projectId,
+        folderId: parent.id,
+        hostId: route.hostId,
+        name: repo
+          .split("/")
+          .pop()!
+          .replace(/^bb-plugin-/, "")
+          .replace(/^bb-/, ""),
+        relativePath: checked.path,
+      },
+      outputSchema: z.object({ id: z.string() }),
+    });
+    return bindSection(repo, created.id);
+  }
+  async function runUnlocked(
+    id: string,
+    dryRun = false,
+    automatic = false,
+    reportOnly = false,
+  ) {
     const item = items.get(id);
     if (!item) throw Error("itemMissing");
     if (item.closed || item.status === "done" || item.status === "muted")
@@ -180,19 +307,33 @@ export default async function plugin(bb: BbPluginApi) {
       )
     )
       throw Error("repoBusy");
-    const checkoutPath = config.checkouts[item.repo];
-    if (!checkoutPath || !config.projectId || !config.hostId)
-      throw Error("configureCheckout");
+    const route = resolveRoute(item.repo, config, await sections());
+    if (route.status !== "ready" || !route.folderId) throw Error(route.status);
+    const checked = await host.call(
+      "inspect",
+      { path: route.checkoutPath, repo: item.repo },
+      { hostId: route.hostId, signal: lifecycle.signal },
+    );
+    const checkoutPath = checked.path;
     const group = [...items.values()].filter(
       (i) => i.repo === item.repo && (i.id === id || i.status === "new"),
     );
-    const prompt = buildPrompt(config, group, checkoutPath, automatic);
-    if (dryRun) return { threadId: null, prompt, checkoutPath };
+    const prompt = reportOnly
+      ? reportPrompt(item.repo, item.url, checkoutPath)
+      : buildPrompt(config, group, checkoutPath, automatic);
+    if (dryRun)
+      return {
+        threadId: null,
+        prompt,
+        checkoutPath,
+        projectId: route.projectId,
+        folderId: route.folderId,
+      };
     const thread = await bb.sdk.threads.spawn({
-      projectId: config.projectId,
+      projectId: route.projectId,
       environment: {
         type: "host",
-        hostId: config.hostId,
+        hostId: route.hostId,
         workspace: { type: "unmanaged", path: checkoutPath },
       },
       providerId: config.provider,
@@ -205,8 +346,26 @@ export default async function plugin(bb: BbPluginApi) {
         repo: item.repo,
         itemIds: group.map((i) => i.id),
         automatic,
+        reportOnly,
+        folderId: route.folderId,
+        checkoutPath,
       },
     });
+    try {
+      await bb.sdk.plugins.callRpc({
+        pluginId: "project-folders",
+        method: "thread_place",
+        input: {
+          threadId: thread.id,
+          projectId: route.projectId,
+          folderId: route.folderId,
+        },
+        outputSchema: z.object({ ok: z.literal(true) }),
+      });
+    } catch {
+      await bb.sdk.threads.stop({ threadId: thread.id });
+      throw Error("placementFailed");
+    }
     for (const entry of group)
       await put({
         ...entry,
@@ -215,7 +374,13 @@ export default async function plugin(bb: BbPluginApi) {
         seen: entry.fingerprint,
       });
     publish();
-    return { threadId: thread.id, prompt: "", checkoutPath };
+    return {
+      threadId: thread.id,
+      prompt: "",
+      checkoutPath,
+      projectId: route.projectId,
+      folderId: route.folderId,
+    };
   }
   async function batchUnlocked(automatic = false) {
     const threads: string[] = [],
@@ -432,8 +597,14 @@ export default async function plugin(bb: BbPluginApi) {
         return config;
       }),
     scan: () => serial(scan),
+    routes: () => serial(routes),
+    bind_section: ({ repo, folderId }) =>
+      serial(() => bindSection(repo, folderId)),
+    create_section: ({ repo }) => serial(() => createSection(repo)),
     run: (input) =>
-      serial(() => runUnlocked(input.id, input.dryRun, input.automatic)),
+      serial(() =>
+        runUnlocked(input.id, input.dryRun, input.automatic, input.reportOnly),
+      ),
     batch: () => serial(() => batchUnlocked()),
     mark: ({ id, status }) =>
       serial(async () => {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { bindingSchema } from "./sections";
 import { DEFAULT_CONTRACT } from "./agent-contract";
 export const configSchema = z.object({
   owner: z
@@ -13,6 +14,8 @@ export const configSchema = z.object({
   hostId: z.string().default(""),
   scanRoot: z.string().default(""),
   checkouts: z.record(z.string(), z.string()).default({}),
+  bindings: z.record(z.string(), bindingSchema).default({}),
+  parentFolderId: z.string().default(""),
   provider: z.string().min(1).default("codex"),
   model: z.string().min(1).default("gpt-6.1-sol"),
   reasoning: z.string().min(1).default("high"),
