@@ -1,0 +1,218 @@
+/*
+ * Pokecut plugin kit: the brand layer for BB-сервис plugin screens.
+ * Rules: docs/DESIGN.md. Reference implementation: plugins/bb-plugin-lane-pilot/app.css.
+ *
+ * Copy into the plugin's app.css after the Tailwind imports, then replace
+ *   repo-pulse -> the plugin id from package.json (bb.id), e.g. lane-pilot
+ *   rp-  -> a short plugin prefix, e.g. lp-
+ * The prefix matters: these classes are not scoped by the build, so two
+ * plugins with the same class name would style each other's screens.
+ *
+ * The --rp-* tokens read the Pokecut theme's --pk-* tokens and fall back to
+ * BB's own palette, so the screen stays tidy under any BB theme, light or dark.
+ * Radii: 8px rows, buttons, inputs; 6px segments in a 9px track; 12px inner
+ * cards; 14px single cards and the header strip; 16px panels; 20px dialogs.
+ * Rules sit in the components layer, so a Tailwind utility on an element wins.
+ */
+
+[data-bb-plugin="repo-pulse"],
+[data-bb-plugin-root]:not([data-bb-plugin]) {
+  --rp-well: var(--pk-well, color-mix(in oklab, var(--muted) 45%, var(--card)));
+  --rp-card: var(--pk-card, var(--card));
+  --rp-outline: var(--pk-outline, var(--input));
+  --rp-hairline: var(--pk-hairline, var(--border));
+  --rp-drop: var(--pk-drop, 0 1px 2px rgb(0 0 0 / 0.06));
+  --rp-card-drop: var(--pk-card-drop, none);
+  --rp-raise: 0 1px 3px 0 rgb(0 0 0 / 0.12);
+  --rp-accent: var(--pk-accent-gradient, linear-gradient(var(--primary), var(--primary)));
+  --rp-accent-edge: var(--pk-accent-edge, none);
+  --rp-success: var(--success, currentColor);
+  --rp-success-text: var(--diff-added, currentColor);
+  --rp-info: var(--timeline-accent, currentColor);
+  --rp-warning: var(--warning, currentColor);
+  --rp-warning-text: var(--warning-text, currentColor);
+  --rp-danger-text: var(--destructive-text, var(--destructive));
+}
+
+@layer components {
+  /* Nested card: a gray well frames a header line and the white body card. */
+  .rp-panel {
+    min-width: 0;
+    max-width: 100%;
+    padding: 4px;
+    border: 1px solid var(--rp-hairline);
+    border-radius: 16px;
+    background-color: var(--rp-well);
+    box-shadow: var(--rp-card-drop);
+  }
+
+  .rp-panel-head {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .rp-panel-body {
+    min-width: 0;
+    max-width: 100%;
+    padding: 12px;
+    border: 1px solid var(--rp-hairline);
+    border-radius: 12px;
+    background-color: var(--rp-card);
+    box-shadow: var(--rp-drop);
+  }
+
+  /* A single white card, for blocks that need no header well. */
+  .rp-card {
+    min-width: 0;
+    border: 1px solid var(--rp-hairline);
+    border-radius: 14px;
+    background-color: var(--rp-card);
+    box-shadow: var(--rp-drop);
+  }
+
+  /* Page header strip: a quiet well holding the title and page actions. */
+  .rp-strip {
+    min-width: 0;
+    padding: 10px 14px;
+    border: 1px solid var(--rp-hairline);
+    border-radius: 14px;
+    background-color: var(--rp-well);
+  }
+
+  /* Raised white surface: secondary buttons, inputs on a well, chips. */
+  .rp-raised {
+    border: 1px solid var(--rp-outline);
+    background-color: var(--rp-card);
+    box-shadow: var(--rp-drop);
+  }
+
+  /* The one primary action of a screen or dialog. */
+  .rp-accent {
+    border-color: transparent;
+    background-color: var(--primary);
+    background-image: var(--rp-accent);
+    box-shadow: var(--rp-accent-edge);
+    color: var(--primary-foreground);
+  }
+
+  .rp-accent:hover:not(:disabled) {
+    filter: brightness(1.05) saturate(1.05);
+  }
+
+  /* Segmented control: a gray track, the chosen option raised in white. */
+  .rp-seg {
+    display: inline-flex;
+    max-width: 100%;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--rp-hairline);
+    border-radius: 9px;
+    background-color: var(--rp-well);
+  }
+
+  .rp-seg-item {
+    border-radius: 6px;
+    color: var(--muted-foreground);
+    font-weight: 500;
+  }
+
+  .rp-seg-item:hover {
+    color: var(--foreground);
+  }
+
+  .rp-seg-item:is([data-state="active"], [aria-pressed="true"]) {
+    background-color: var(--rp-card);
+    box-shadow: var(--rp-raise);
+    color: var(--foreground);
+    font-weight: 600;
+  }
+
+  /* Navigation rows: quiet until chosen; the chosen one is a raised pill. */
+  .rp-nav-item {
+    border-radius: 8px;
+    color: var(--muted-foreground);
+  }
+
+  .rp-nav-item:hover {
+    color: var(--foreground);
+  }
+
+  .rp-nav-item:is([aria-selected="true"], [aria-current="page"]) {
+    background-color: var(--rp-card);
+    box-shadow: inset 0 0 0 1px var(--rp-outline), var(--rp-drop);
+    color: var(--foreground);
+  }
+
+  /* Small square tile for an icon or status mark next to a title. */
+  .rp-tile {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--rp-outline);
+    border-radius: 9px;
+    background-color: var(--rp-card);
+    box-shadow: var(--rp-drop);
+  }
+
+  /* Apply to @bb/switch. */
+  .rp-switch[data-state="checked"] {
+    background-color: var(--primary);
+    background-image: var(--rp-accent);
+  }
+
+  .rp-switch[data-state="unchecked"] {
+    background-color: var(--rp-outline);
+  }
+
+  .rp-switch > span {
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
+  }
+
+  /* «?» help mark: a 14px circle raised to the top of the title line. */
+  .rp-help {
+    display: inline-flex;
+    width: 14px;
+    height: 14px;
+    margin-left: 4px;
+    align-items: center;
+    justify-content: center;
+    vertical-align: top;
+    border: 1px solid var(--rp-outline);
+    border-radius: 9999px;
+    background-color: var(--rp-card);
+    color: var(--muted-foreground);
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  /* Status pills: fully rounded, soft tint, coloured text. */
+  .rp-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 9999px;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .rp-pill-success { background-color: color-mix(in oklab, var(--rp-success) 14%, transparent); color: var(--rp-success-text); }
+  .rp-pill-info { background-color: color-mix(in oklab, var(--rp-info) 13%, transparent); color: var(--rp-info); }
+  .rp-pill-warning { background-color: color-mix(in oklab, var(--rp-warning) 16%, transparent); color: var(--rp-warning-text); }
+  .rp-pill-danger { background-color: color-mix(in oklab, var(--destructive) 12%, transparent); color: var(--rp-danger-text); }
+  .rp-pill-neutral { background-color: var(--rp-card); box-shadow: inset 0 0 0 1px var(--rp-outline); color: var(--foreground); }
+  .rp-pill-muted { background-color: color-mix(in oklab, var(--foreground) 7%, transparent); color: var(--foreground); }
+
+  .rp-text-success { color: var(--rp-success-text); }
+  .rp-text-warning { color: var(--rp-warning-text); }
+  .rp-text-danger { color: var(--rp-danger-text); }
+}
+
+.rp-settings { display:grid; gap:12px; } .rp-settings textarea { min-height:96px; } .rp-actions { display:flex; gap:6px; flex-wrap:wrap; } .rp-title { overflow-wrap:anywhere; }
