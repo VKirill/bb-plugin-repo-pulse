@@ -109,7 +109,12 @@ export function mountChromeLocalization() {
       const t = strings();
       const currentPairs =
         location.pathname === "/settings/plugins/repo-pulse"
-          ? [...pairs, [en.token, ru.token], [en.secretLabel, ru.secretLabel]]
+          ? [
+              ...pairs,
+              [en.token, ru.token],
+              [en.secretLabel, ru.secretLabel],
+              [en.notSet, ru.notSet],
+            ]
           : pairs;
       const translate = (text: string) => {
         for (const [english, russian] of currentPairs)
@@ -134,8 +139,10 @@ export function mountChromeLocalization() {
         if (next !== value.trim())
           node.nodeValue = value.replace(value.trim(), next);
       }
-      for (const el of document.querySelectorAll("[aria-label],[title]"))
-        for (const attr of ["aria-label", "title"]) {
+      for (const el of document.querySelectorAll(
+        "[aria-label],[title],[placeholder]",
+      ))
+        for (const attr of ["aria-label", "title", "placeholder"]) {
           const value = el.getAttribute(attr);
           if (value) {
             const next = translate(value);
@@ -150,7 +157,7 @@ export function mountChromeLocalization() {
     childList: true,
     characterData: true,
     attributes: true,
-    attributeFilter: ["aria-label", "title"],
+    attributeFilter: ["aria-label", "title", "placeholder"],
   });
   const unsub = observeLocale(sync);
   sync();

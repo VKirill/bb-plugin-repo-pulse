@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4 — 2026-10-16
+
+- Translate the host-rendered empty GitHub secret placeholder on Repo Pulse’s own settings page.
+
 ## 0.1.3 — 2026-10-16
 
 - Disable bulk dispatch while read-only report mode is selected; verify the actual Russian page in the SDK UI harness.

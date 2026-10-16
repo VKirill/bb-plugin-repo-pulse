@@ -95,12 +95,15 @@ describe("complete interface localization", () => {
 it("localizes secret-field labels only on its own plugin settings page", async () => {
   document.documentElement.setAttribute("data-pk-lang", "ru");
   history.replaceState(null, "", "/settings/plugins/repo-pulse");
-  document.body.innerHTML = `<p>${en.token}</p><span>${en.secretLabel}</span>`;
+  document.body.innerHTML = `<p>${en.token}</p><span>${en.secretLabel}</span><input placeholder="${en.notSet}" />`;
   const stop = mountChromeLocalization();
   try {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(document.querySelector("span")?.textContent).toBe(ru.secretLabel);
     expect(document.querySelector("p")?.textContent).toBe(ru.token);
+    expect(document.querySelector("input")?.getAttribute("placeholder")).toBe(
+      ru.notSet,
+    );
   } finally {
     stop();
   }
