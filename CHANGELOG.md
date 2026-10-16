@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8 — 2026-10-16
+
+- Add a practical README walkthrough from an incoming issue through analysis, an owner decision in the same thread, validation, release and closure; include clarification, decline and blocker behavior. Thanks @VKirill for #1.
+- Documentation-only release; plugin behavior and dependencies are unchanged.
+
 ## 0.1.4 — 2026-10-16
 
 - Translate the host-rendered empty GitHub secret placeholder on Repo Pulse’s own settings page.
