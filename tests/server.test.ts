@@ -153,3 +153,46 @@ describe("collector integration", () => {
     }
   });
 });
+
+describe("poller disposal", () => {
+  it("aborts an in-flight request and never dispatches on shutdown", async () => {
+    const original = globalThis.fetch;
+    let started!: () => void;
+    const fetched = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    globalThis.fetch = async (_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init!.signal!;
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+        started();
+      });
+    const h = createFakePluginHost({
+      settings: { githubToken: "test-only" },
+      pluginId: "repo-pulse",
+    });
+    try {
+      await plugin(h.bb);
+      await h.harness.behavior.callRpc(
+        "save_config",
+        configSchema.parse({
+          projectId: "p",
+          owner: "owner",
+          repositories: ["owner/repo"],
+          marketplace: false,
+          automatic: true,
+        }),
+      );
+      const service = h.harness.behavior.runService("poll");
+      await fetched;
+      service.controller.abort();
+      await service.done;
+      expect(h.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+    } finally {
+      globalThis.fetch = original;
+      await h.harness.lifecycle.dispose();
+    }
+  });
+});

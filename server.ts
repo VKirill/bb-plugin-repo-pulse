@@ -235,7 +235,12 @@ export default async function plugin(bb: BbPluginApi) {
     }
     return { threads, errors };
   }
-  async function refresh() {
+  async function refresh(serviceSignal?: AbortSignal) {
+    const pollSignal = AbortSignal.any([
+      lifecycle.signal,
+      ...(serviceSignal ? [serviceSignal] : []),
+    ]);
+    pollSignal.throwIfAborted();
     await reconcile();
     if (
       config.hostId &&
@@ -262,7 +267,7 @@ export default async function plugin(bb: BbPluginApi) {
       },
       fetch,
       budget,
-      lifecycle.signal,
+      pollSignal,
     );
     const errors: string[] = [];
     let newCount = 0;
@@ -377,7 +382,7 @@ export default async function plugin(bb: BbPluginApi) {
           .map((r) => r.full_name);
       }
       for (const repo of repos) {
-        if (lifecycle.signal.aborted) break;
+        if (pollSignal.aborted) break;
         try {
           await collect(repo);
         } catch (e) {
@@ -398,6 +403,7 @@ export default async function plugin(bb: BbPluginApi) {
       errors.push(e instanceof Error ? e.message : "pollFailed");
     }
     await bb.storage.kv.set("anonymous-budget", budget);
+    pollSignal.throwIfAborted();
     meta = {
       lastCheck: new Date().toISOString(),
       errors: errors.slice(0, 100),
@@ -416,7 +422,7 @@ export default async function plugin(bb: BbPluginApi) {
         await reconcile();
         return snapshot();
       }),
-    refresh: () => serial(refresh),
+    refresh: () => serial(() => refresh()),
     config: async () => config,
     save_config: (next) =>
       serial(async () => {
@@ -463,7 +469,12 @@ export default async function plugin(bb: BbPluginApi) {
           Date.now() - Date.parse(meta.lastCheck ?? "1970-01-01") >=
             config.intervalMinutes * 60000
         )
-          await serial(refresh);
+          try {
+            await serial(() => refresh(signal));
+          } catch (error) {
+            if (signal.aborted) return;
+            throw error;
+          }
         await new Promise<void>((resolve) => {
           const done = () => {
             clearTimeout(timer);
@@ -505,7 +516,7 @@ export default async function plugin(bb: BbPluginApi) {
             result = snapshot();
             break;
           case "refresh":
-            result = await serial(refresh);
+            result = await serial(() => refresh());
             break;
           case "run":
             result = await serial(() =>
