@@ -10,7 +10,13 @@ import {
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import { activePhase } from "./workflow";
-import { actionable, isBot, type Config, type Item } from "./core";
+import {
+  actionable,
+  isBot,
+  type Config,
+  type Item,
+  type RateLimits,
+} from "./core";
 import { useRoutes, RepositorySection } from "./repository-sections";
 import { mountChromeLocalization, detectLocale } from "./i18n";
 import { useStrings, strings, errorText, type en } from "./i18n";
@@ -20,6 +26,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableRow, TableCell } from "@/components/ui/table";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "./components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import "./app.css";
 type Snapshot = {
@@ -29,6 +42,9 @@ type Snapshot = {
   errors: string[];
   authenticated: boolean;
   remaining: number | null;
+  limits?: RateLimits;
+  nextCheck?: string | null;
+  timeZone?: string;
 };
 function usePulse() {
   const rpc = useRpc<typeof rpcContract>();
@@ -138,7 +154,6 @@ function Settings({
             "model",
             "reasoning",
             "permission",
-            "intervalMinutes",
           ] as const
         ).map((key) => (
           <div key={key}>
@@ -146,19 +161,96 @@ function Settings({
             <Input
               className="mt-1"
               id={`rp-${key}`}
-              type={key === "intervalMinutes" ? "number" : "text"}
+              type="text"
               value={String(config[key])}
-              onChange={(e) =>
-                change(
-                  key,
-                  key === "intervalMinutes"
-                    ? Number(e.target.value)
-                    : e.target.value,
-                )
-              }
+              onChange={(e) => change(key, e.target.value)}
             />
           </div>
         ))}
+        <div>
+          <Label htmlFor="rp-schedule">{t.schedule}</Label>
+          <Select
+            value={config.schedule.mode}
+            onValueChange={(mode: Config["schedule"]["mode"]) =>
+              change("schedule", { ...config.schedule, mode })
+            }
+          >
+            <SelectTrigger id="rp-schedule">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="daily">{t.scheduleDaily}</SelectItem>
+              <SelectItem value="twice">{t.scheduleTwice}</SelectItem>
+              <SelectItem value="off">{t.scheduleOff}</SelectItem>
+              <SelectItem value="frequent">{t.scheduleFrequent}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        {(config.schedule.mode === "daily" ||
+          config.schedule.mode === "twice") && (
+          <>
+            <div>
+              <Label htmlFor="rp-time">{t.scheduleTime}</Label>
+              <Input
+                id="rp-time"
+                type="time"
+                value={config.schedule.time}
+                onChange={(e) =>
+                  change("schedule", {
+                    ...config.schedule,
+                    time: e.target.value,
+                  })
+                }
+              />
+            </div>
+            {config.schedule.mode === "twice" && (
+              <div>
+                <Label htmlFor="rp-second-time">{t.scheduleSecondTime}</Label>
+                <Input
+                  id="rp-second-time"
+                  type="time"
+                  value={config.schedule.secondTime}
+                  onChange={(e) =>
+                    change("schedule", {
+                      ...config.schedule,
+                      secondTime: e.target.value,
+                    })
+                  }
+                />
+              </div>
+            )}
+          </>
+        )}
+        {config.schedule.mode !== "off" && (
+          <div>
+            <Label htmlFor="rp-time-zone">{t.scheduleTimeZone}</Label>
+            <Input
+              id="rp-time-zone"
+              value={config.schedule.timeZone}
+              onChange={(e) =>
+                change("schedule", {
+                  ...config.schedule,
+                  timeZone: e.target.value,
+                })
+              }
+            />
+          </div>
+        )}
+        {config.schedule.mode === "frequent" && (
+          <div>
+            <Label htmlFor="rp-intervalMinutes">{t.intervalMinutes}</Label>
+            <Input
+              id="rp-intervalMinutes"
+              type="number"
+              min={5}
+              max={1440}
+              value={config.intervalMinutes}
+              onChange={(e) =>
+                change("intervalMinutes", Number(e.target.value))
+              }
+            />
+          </div>
+        )}
         <div>
           <Label htmlFor="rp-repos">{t.repositories}</Label>
           <Textarea
@@ -312,8 +404,24 @@ function Page() {
             ? ` · ${t.last}: ${new Date(data.lastCheck).toLocaleString(t === strings() && detectLocale() === "ru" ? "ru-RU" : "en-US")}`
             : ""}
           {data?.remaining != null
-            ? ` · ${t.remaining}: ${data.remaining}`
+            ? ` · ${t.remaining}: ${data.remaining.toLocaleString(detectLocale() === "ru" ? "ru-RU" : "en-US")}${data.limits?.core?.limit != null ? " " + t.hourlyBudget.replace("{limit}", data.limits.core.limit.toLocaleString(detectLocale() === "ru" ? "ru-RU" : "en-US")) : ""}`
             : ""}
+        </p>
+        {data?.limits?.search?.remaining === 0 &&
+          (data.limits.search.reset ?? 0) > Date.now() && (
+            <p className="text-xs text-muted-foreground">
+              {t.searchExhausted.replace(
+                "{time}",
+                new Date(data.limits.search.reset!).toLocaleTimeString(
+                  detectLocale() === "ru" ? "ru-RU" : "en-US",
+                ),
+              )}
+            </p>
+          )}
+        <p className="text-xs text-muted-foreground" data-testid="next-check">
+          {data?.nextCheck
+            ? `${t.nextCheck}: ${new Date(data.nextCheck).toLocaleString(detectLocale() === "ru" ? "ru-RU" : "en-US", { timeZone: data.timeZone ?? "Europe/Madrid" })} · ${data.timeZone ?? "Europe/Madrid"}`
+            : t.scheduleDisabled}
         </p>
         {config && (!config.hostId || !config.projectId) && (
           <p className="rp-pill rp-pill-warning">{t.unconfigured}</p>

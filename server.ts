@@ -12,6 +12,7 @@ import {
 } from "./workflow";
 import { failedCheck, gateStep, maintainerGateOnly } from "./checks";
 import { en } from "./messages";
+import { nextCheck, startupDue } from "./schedule";
 import { createHash } from "node:crypto";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -30,6 +31,7 @@ import {
   type Config,
   type Item,
   type CacheEntry,
+  rateLimitsSchema,
 } from "./core";
 import {
   sectionSchema,
@@ -51,6 +53,9 @@ const snapshotSchema = z.object({
   errors: z.array(z.string()),
   authenticated: z.boolean(),
   remaining: z.number().nullable(),
+  limits: rateLimitsSchema,
+  nextCheck: z.string().nullable(),
+  timeZone: z.string(),
 });
 export const rpcContract = defineRpcContract({
   list: { input: z.null(), output: snapshotSchema },
@@ -144,17 +149,29 @@ export default async function plugin(bb: BbPluginApi) {
         await bb.storage.kv.set(key, item);
     }
   }
-  let meta = (await bb.storage.kv.get<{
+  const storedMeta = await bb.storage.kv.get<{
     lastCheck: string | null;
     errors: string[];
     authenticated: boolean;
     remaining: number | null;
-  }>("meta")) ?? {
-    lastCheck: null,
-    errors: [],
-    authenticated: false,
-    remaining: null,
+    limits?: unknown;
+  }>("meta");
+  const savedLimits = rateLimitsSchema.safeParse(storedMeta?.limits ?? {});
+  let meta = {
+    lastCheck: storedMeta?.lastCheck ?? null,
+    errors: storedMeta?.errors ?? [],
+    authenticated: storedMeta?.authenticated ?? false,
+    // Older snapshots mixed search/core. Do not relabel the old scalar as core.
+    remaining: savedLimits.success
+      ? (savedLimits.data.core?.remaining ?? null)
+      : null,
+    limits: savedLimits.success ? savedLimits.data : {},
   };
+  let scheduledAt = nextCheck(
+    config.schedule,
+    config.intervalMinutes,
+    Date.now(),
+  );
   const host = bb.hosts.experimental_client({ contract: hostContract });
   const lifecycle = new AbortController();
   bb.onDispose(async () => {
@@ -230,6 +247,8 @@ export default async function plugin(bb: BbPluginApi) {
     [...items.values()].filter((i) => actionable(displayItem(i))).length;
   const snapshot = () => ({
     ...meta,
+    nextCheck: scheduledAt,
+    timeZone: config.schedule.timeZone,
     items: [...items.values()]
       .map(displayItem)
       .sort((a, b) => b.updated.localeCompare(a.updated))
@@ -604,8 +623,17 @@ export default async function plugin(bb: BbPluginApi) {
     const budget = (await bb.storage.kv.get<{ used: number; reset: number }>(
       "anonymous-budget",
     )) ?? { used: 0, reset: Date.now() + 3600000 };
+    const credential = await token();
+    const rateKey =
+      "rate-limits:" +
+      createHash("sha256")
+        .update(credential ?? "anonymous")
+        .digest("hex");
+    const stored = rateLimitsSchema.safeParse(
+      (await bb.storage.kv.get(rateKey)) ?? {},
+    );
     const api = new Github(
-      await token(),
+      credential,
       {
         get: async (key) =>
           bb.storage.kv.get<CacheEntry>(
@@ -621,6 +649,7 @@ export default async function plugin(bb: BbPluginApi) {
       fetch,
       budget,
       pollSignal,
+      stored.success ? stored.data : {},
     );
     const errors: string[] = [];
     let newCount = 0;
@@ -914,13 +943,20 @@ export default async function plugin(bb: BbPluginApi) {
     }
     await bb.storage.kv.set("archived-repos", [...archivedRepos]);
     await bb.storage.kv.set("anonymous-budget", budget);
+    await bb.storage.kv.set(rateKey, api.limits);
     pollSignal.throwIfAborted();
     meta = {
       lastCheck: new Date().toISOString(),
       errors: errors.slice(0, 100),
       authenticated: api.authenticated,
       remaining: api.remaining,
+      limits: api.limits,
     };
+    scheduledAt = nextCheck(
+      config.schedule,
+      config.intervalMinutes,
+      Date.now(),
+    );
     await bb.storage.kv.set("meta", meta);
     if (newCount) bb.realtime.publish("new-items", { count: newCount });
     publish();
@@ -939,12 +975,22 @@ export default async function plugin(bb: BbPluginApi) {
     const budget = (await bb.storage.kv.get<{ used: number; reset: number }>(
       "anonymous-budget",
     )) ?? { used: 0, reset: Date.now() + 3600000 };
+    const credential = await token();
+    const rateKey =
+      "rate-limits:" +
+      createHash("sha256")
+        .update(credential ?? "anonymous")
+        .digest("hex");
+    const stored = rateLimitsSchema.safeParse(
+      (await bb.storage.kv.get(rateKey)) ?? {},
+    );
     const api = new Github(
-      await token(),
+      credential,
       { get: async () => undefined, set: async () => {} },
       fetch,
       budget,
       lifecycle.signal,
+      stored.success ? stored.data : {},
     );
     try {
       const row = await api.get(`/repos/${repo}/issues/${number}`);
@@ -956,6 +1002,7 @@ export default async function plugin(bb: BbPluginApi) {
       publish();
       return items.get(item.id)!;
     } finally {
+      await bb.storage.kv.set(rateKey, api.limits);
       await bb.storage.kv.set("anonymous-budget", budget);
     }
   }
@@ -971,6 +1018,11 @@ export default async function plugin(bb: BbPluginApi) {
     save_config: (next) =>
       serial(async () => {
         config = next;
+        scheduledAt = nextCheck(
+          config.schedule,
+          config.intervalMinutes,
+          Date.now(),
+        );
         await bb.storage.kv.set("config", config);
         publish();
         return config;
@@ -1047,30 +1099,32 @@ export default async function plugin(bb: BbPluginApi) {
         publish();
       }),
     );
-  bb.background.service("poll", {
+  // SDK cron is server-local and has no timezone option. Its durable minute tick
+  // only checks our zoned due instant; GitHub is contacted solely when due.
+  bb.background.schedule("poll", "* * * * *", () =>
+    serial(async () => {
+      if (
+        config.projectId &&
+        scheduledAt &&
+        Date.now() >= Date.parse(scheduledAt)
+      )
+        await refresh();
+    }),
+  );
+  bb.background.service("startup", {
     async start(signal) {
-      while (!signal.aborted) {
-        if (
-          config.projectId &&
-          Date.now() - Date.parse(meta.lastCheck ?? "1970-01-01") >=
-            config.intervalMinutes * 60000
-        )
-          try {
-            await serial(() => refresh(signal));
-          } catch (error) {
-            if (signal.aborted) return;
-            throw error;
-          }
-        await new Promise<void>((resolve) => {
-          const done = () => {
-            clearTimeout(timer);
-            signal.removeEventListener("abort", done);
-            resolve();
-          };
-          const timer = setTimeout(done, 60000);
-          signal.addEventListener("abort", done, { once: true });
-          if (signal.aborted) done();
+      try {
+        await serial(async () => {
+          if (
+            !signal.aborted &&
+            config.projectId &&
+            config.schedule.mode !== "off" &&
+            startupDue(meta.lastCheck, Date.now())
+          )
+            await refresh(signal);
         });
+      } catch (error) {
+        if (!signal.aborted) throw error;
       }
     },
   });

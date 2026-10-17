@@ -214,3 +214,63 @@ it("offers Implement and Decline on a pending analysis and sends the choice to t
     document.documentElement.lang = "en";
   }
 });
+
+it("shows the core hourly budget, hides healthy search, and labels only exhausted search", async () => {
+  document.documentElement.lang = "ru-RU";
+  const app = await loadPluginApp(() => import("../app"));
+  let searchRemaining = 29;
+  const slot = renderSlot(
+    app.navPanels[0],
+    { subPath: "" },
+    {
+      rpc: {
+        list: () => ({
+          items: [],
+          count: 0,
+          lastCheck: "2026-10-17T18:00:00Z",
+          errors: [],
+          authenticated: true,
+          remaining: 4990,
+          limits: {
+            core: { remaining: 4990, limit: 5000, reset: Date.now() + 3600000 },
+            search: {
+              remaining: searchRemaining,
+              limit: 30,
+              reset: Date.now() + 60000,
+            },
+          },
+          nextCheck: "2026-10-18T07:00:00Z",
+          timeZone: "Europe/Madrid",
+        }),
+        config: () => configSchema.parse({}),
+        routes: () => ({ sections: [], routes: [] }),
+      },
+    },
+  );
+  try {
+    const label = await slot.findByText(/Осталось запросов API/);
+    expect(label.textContent?.replace(/[\s\u00a0\u202f]/g, " ")).toContain(
+      "Осталось запросов API: 4 990 из 5 000 в час",
+    );
+    expect(slot.queryByText(/Лимит поиска исчерпан/)).toBeNull();
+    expect(slot.getByTestId("next-check").textContent).toContain(
+      "18.10.2026, 09:00:00 · Europe/Madrid",
+    );
+    searchRemaining = 0;
+    await slot.behavior.emitRealtime("changed", {});
+    expect(await slot.findByText(/Лимит поиска исчерпан до/)).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: ru.settings }));
+    expect(await slot.findByLabelText(ru.scheduleTime)).toHaveProperty(
+      "value",
+      "09:00",
+    );
+    expect(slot.getByLabelText(ru.scheduleTimeZone)).toHaveProperty(
+      "value",
+      "Europe/Madrid",
+    );
+    expect(slot.queryByLabelText(ru.intervalMinutes)).toBeNull();
+  } finally {
+    slot.lifecycle.unmount();
+    document.documentElement.lang = "en";
+  }
+});

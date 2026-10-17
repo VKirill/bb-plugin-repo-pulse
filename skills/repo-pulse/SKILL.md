@@ -30,6 +30,12 @@ After stage 2 is actually complete, finish the Russian report with an exact fina
 
 Own issues are normally filtered out. When explicitly requested by the owner (including QA), import one with `bb repo-pulse track <owner/repo> <number>`. It remains tracked through its GitHub closure.
 
-Settings contain owner/repositories/exclusions, project/host/scan root, checkout and section bindings, provider/model/reasoning/permissions, poll interval, editable contract and automatic analysis (off by default). Missing checkout or section blocks launch. Never start writers in a checkout occupied by unrelated work: Repo Pulse owns only its linked thread locks.
+Settings contain owner/repositories/exclusions, project/host/scan root, checkout and section bindings, provider/model/reasoning/permissions, daily/twice/off/frequent schedule, editable contract and automatic analysis (off by default). Missing checkout or section blocks launch. Never start writers in a checkout occupied by unrelated work: Repo Pulse owns only its linked thread locks.
 
 Credentials stay on the server: secret `githubToken` or Env Catalog `GH_TOKEN`. Never print them or copy them to files. Anonymous polling has a persistent 45-request/hour budget. Raw check logs are bounded and not persisted; completed gate classification is cached by check id/completion time. Poll errors do not prove closure or a harmless gate. The count uses the native panel header because sidebar accessories are not mounted by BB.
+
+## Polling and API limits
+
+The default is daily at 09:00 Europe/Madrid; settings can change the time and IANA time zone, select twice daily (09:00 and 14:00), turn scheduling off, or explicitly select frequent interval polling. The header shows the next due check in that zone. The native SDK schedule provides a durable minute tick; it only calls GitHub when the zoned check is due. Startup checks only if the last poll is absent or older than 24 hours, and never when scheduling is off. Reload skips a missed daily slot if the last poll is recent. Manual refresh always remains available.
+
+GitHub core/search/GraphQL limits are tracked and persisted separately per credential. Exhausting search must never block core or replace its displayed hourly remaining/total. Search is shown separately only when exhausted, with reset time. No secrets or raw logs are returned.

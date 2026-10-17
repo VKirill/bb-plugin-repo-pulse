@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9 — 2026-10-17
+
+- Track GitHub core, search and GraphQL rate limits independently, including resource-specific blocking and persistence. Show the main hourly core budget; surface search only when exhausted.
+- Default to daily 09:00 Europe/Madrid with configurable time/zone, twice-daily, off and explicit frequent options. Use the native SDK schedule, show the next check, and avoid startup/reload polling unless the last check is older than a day.
+- Add mixed-resource, persistence, reset/304, schedule/DST, reload and localized UI regression coverage.
+
 ## 0.1.8 — 2026-10-16
 
 - Add a practical README walkthrough from an incoming issue through analysis, an owner decision in the same thread, validation, release and closure; include clarification, decline and blocker behavior. Thanks @VKirill for #1.

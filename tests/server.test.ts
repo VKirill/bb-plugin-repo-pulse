@@ -114,10 +114,11 @@ describe("dispatch lifecycle", () => {
     ]);
     await h.harness.lifecycle.dispose();
   });
-  it("keeps auto mode disabled by default and installs one background poller", async () => {
+  it("keeps auto mode disabled by default and installs a startup guard and one native schedule", async () => {
     const h = await setup();
     expect(configSchema.parse({}).automatic).toBe(false);
     expect(h.harness.registrations.services).toHaveLength(1);
+    expect(h.harness.registrations.schedules).toHaveLength(1);
     await h.harness.lifecycle.dispose();
   });
 });
@@ -225,7 +226,7 @@ describe("poller disposal", () => {
           automatic: true,
         }),
       );
-      const service = h.harness.behavior.runService("poll");
+      const service = h.harness.behavior.runService("startup");
       await fetched;
       service.controller.abort();
       await service.done;
@@ -560,4 +561,48 @@ it("rolls back a failed decision send and does not silently mark an unfinished i
   } finally {
     await h.harness.lifecycle.dispose();
   }
+});
+
+describe("rate-limit snapshot", () => {
+  it("reports core after a final search response, persists the buckets, and keeps them on reload", async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const search = new URL(String(input)).pathname.startsWith("/search/");
+      return new Response(JSON.stringify(search ? { items: [] } : []), {
+        headers: {
+          "x-ratelimit-resource": search ? "search" : "core",
+          "x-ratelimit-remaining": search ? "29" : "4991",
+          "x-ratelimit-limit": search ? "30" : "5000",
+          "x-ratelimit-reset": String(
+            Math.floor(Date.now() / 1000) + (search ? 60 : 3600),
+          ),
+        },
+      });
+    };
+    let h = createFakePluginHost({
+      pluginId: "repo-pulse",
+      settings: { githubToken: "test-only" },
+      sdk: { plugins: { list: async () => ({ plugins: [] }) } },
+    });
+    try {
+      await plugin(h.bb);
+      const result = await h.harness.behavior.callRpc("refresh", null);
+      expect(result).toMatchObject({
+        remaining: 4991,
+        limits: {
+          core: { remaining: 4991, limit: 5000 },
+          search: { remaining: 29, limit: 30 },
+        },
+        errors: [],
+      });
+      h = await h.harness.lifecycle.reload(plugin);
+      expect(await h.harness.behavior.callRpc("list", null)).toMatchObject({
+        remaining: 4991,
+        limits: { search: { remaining: 29 } },
+      });
+    } finally {
+      globalThis.fetch = original;
+      await h.harness.lifecycle.dispose();
+    }
+  });
 });
